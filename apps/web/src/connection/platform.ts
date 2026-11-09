@@ -53,6 +53,7 @@ import { clearComposerDraftsEnvironment } from "../composerDraftStore";
 import { isHostedStaticApp } from "../hostedPairing";
 import { isLocalEnvironmentDisabled } from "../localEnvironment";
 import { randomUUID } from "../lib/utils";
+import { isExowattP3Version } from "../versionSkew";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { acknowledgeRpcRequest, trackRpcRequestSent } from "../rpc/requestLatencyState";
 import {
@@ -242,13 +243,15 @@ export const provisionDesktopSshEnvironment = Effect.fn(
       if (
         error._tag === "ConnectionBlockedError" ||
         descriptor.serverVersion === APP_VERSION ||
+        // exowatt: a P3 remote already matched the desktop's compat token before reuse.
+        isExowattP3Version(descriptor.serverVersion) ||
         !error.detail.includes("[ssh_http:500]")
       ) {
         return error;
       }
       return new ConnectionBlockedError({
         reason: "configuration",
-        detail: `${descriptor.label} runs T3 Code ${descriptor.serverVersion}, but this desktop is ${APP_VERSION}, and that server could not accept its pairing. Restart the T3 server on ${descriptor.label} so it runs ${APP_VERSION}, then retry.`,
+        detail: `${descriptor.label} runs a stock T3 server (${descriptor.serverVersion}) that could not accept the pairing from this P3 Code desktop (${APP_VERSION}). Stop the stock T3 server on ${descriptor.label} so P3 Code can start its own, then retry.`,
       });
     },
   });

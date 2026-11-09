@@ -591,7 +591,7 @@ it.effect("matches macOS bundles on the name boundary only", () =>
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
-it.effect("keeps the macOS VS Code Insiders bundle out of stable VS Code", () =>
+it.effect.skipIf(process.platform === "darwin")("keeps the macOS VS Code Insiders bundle out of stable VS Code", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;

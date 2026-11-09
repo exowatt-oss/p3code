@@ -7,6 +7,7 @@ import {
   PlanId,
   ProviderInstanceId,
   ProviderThreadId,
+  ProviderTurnId,
   RunAttemptId,
   RunId,
   ScheduledTaskId,
@@ -24,6 +25,8 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   deriveCanInterruptRunningThread,
+  deriveLatestWorkspaceState,
+  deriveWorkspaceStates,
   deriveTimelineEntriesFromVisibleTurnItems,
   deriveTimelineEntriesFromVisibleTurnItemsWithState,
   deriveRevertTurnCountByUserMessageId,
@@ -1069,6 +1072,152 @@ describe("native provider presentation in the v2 timeline", () => {
     sourceThreadId: item.threadId,
     sourceItemId: item.id,
     item,
+  });
+
+  it("projects Phi's hand-back into the timeline and supersedes it on the next turn", () => {
+    const firstTurn = ProviderTurnId.make("phi-turn-1");
+    const nextTurn = ProviderTurnId.make("phi-turn-2");
+    const state: OrchestrationV2TurnItem = {
+      ...base,
+      id: TurnItemId.make("phi-state"),
+      providerTurnId: firstTurn,
+      type: "workspace_state",
+      payload: {
+        endState: "awaiting-human",
+        question: "Ship it?",
+        openItems: ["Review the deployment"],
+        feadsEpic: "ex-123",
+        recordedAt: DateTime.formatIso(timestamp),
+      },
+    };
+    const items = [visible(state)];
+    expect(deriveWorkspaceStates(items)).toMatchObject([
+      { endState: "awaiting-human", question: "Ship it?", openItems: ["Review the deployment"] },
+    ]);
+    expect(deriveLatestWorkspaceState(items, firstTurn)?.id).toBe(state.id);
+    expect(deriveLatestWorkspaceState(items, nextTurn)).toBeNull();
+    const entries = deriveTimelineEntriesFromVisibleTurnItems({
+      visibleTurnItems: items,
+      optimisticMessages: [],
+    });
+    expect(entries.map((entry) => entry.kind)).toEqual(["workspace-state"]);
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: entries,
+      latestRun: {
+        runId: base.runId,
+        status: "completed",
+        startedAt: DateTime.formatIso(timestamp),
+        completedAt: DateTime.formatIso(timestamp),
+      },
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+    expect(rows).toMatchObject([
+      { kind: "workspace-state", workspaceState: { feadsEpic: "ex-123" } },
+    ]);
+    expect(
+      deriveMessagesTimelineRows({
+        timelineEntries: deriveTimelineEntriesFromVisibleTurnItems({
+          visibleTurnItems: [
+            visible({
+              ...state,
+              payload: { ...state.payload, openItems: [], feadsEpic: undefined },
+            }),
+          ],
+          optimisticMessages: [],
+        }),
+        latestRun: null,
+        isWorking: false,
+        activeTurnStartedAt: null,
+        turnDiffSummaries: [],
+        supportsConversationRollback: false,
+      }),
+    ).toEqual([]);
+  });
+
+  it("skips workspace-state timeline rows when callouts are off without discarding the state", () => {
+    const handback: OrchestrationV2TurnItem = {
+      ...base,
+      id: TurnItemId.make("phi-hidden-handback"),
+      type: "workspace_state",
+      payload: {
+        endState: "awaiting-human",
+        question: "Ship it?",
+        openItems: ["Review the deployment"],
+        feadsEpic: "ex-123",
+        recordedAt: DateTime.formatIso(timestamp),
+      },
+    };
+    const entries = deriveTimelineEntriesFromVisibleTurnItems({
+      visibleTurnItems: [visible(handback)],
+      optimisticMessages: [],
+    });
+    const input = {
+      timelineEntries: entries,
+      latestRun: null,
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    };
+
+    expect(entries.map((entry) => entry.kind)).toEqual(["workspace-state"]);
+    expect(deriveMessagesTimelineRows({ ...input, showWorkspaceStateCallouts: false })).toEqual([]);
+    expect(
+      deriveMessagesTimelineRows({ ...input, showWorkspaceStateCallouts: true }),
+    ).toMatchObject([{ kind: "workspace-state", workspaceState: { feadsEpic: "ex-123" } }]);
+  });
+
+  it("never folds a workspace-state card under the completed turn's work", () => {
+    const work: OrchestrationV2TurnItem = {
+      ...base,
+      id: TurnItemId.make("phi-work"),
+      ordinal: 1,
+      type: "command_execution",
+      input: "echo ready",
+      output: "ready",
+    };
+    const response: OrchestrationV2TurnItem = {
+      ...base,
+      id: TurnItemId.make("phi-response"),
+      ordinal: 2,
+      type: "assistant_message",
+      messageId: MessageId.make("phi-response"),
+      text: "I need a decision.",
+      streaming: false,
+    };
+    const handback: OrchestrationV2TurnItem = {
+      ...base,
+      id: TurnItemId.make("phi-handback"),
+      ordinal: 3,
+      type: "workspace_state",
+      payload: {
+        endState: "awaiting-human",
+        question: "Approve?",
+        openItems: ["Approval"],
+        recordedAt: DateTime.formatIso(timestamp),
+      },
+    };
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries: deriveTimelineEntriesFromVisibleTurnItems({
+        visibleTurnItems: [visible(work), visible(response), visible(handback)],
+        optimisticMessages: [],
+      }),
+      latestRun: {
+        runId: base.runId,
+        status: "completed",
+        startedAt: DateTime.formatIso(timestamp),
+        completedAt: DateTime.formatIso(timestamp),
+      },
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+    });
+    expect(rows.some((row) => row.kind === "turn-fold")).toBe(true);
+    expect(rows.some((row) => row.kind === "workspace-state")).toBe(true);
   });
 
   it("keeps async answers in the question row, including incrementally appended replies", () => {

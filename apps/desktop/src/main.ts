@@ -15,15 +15,20 @@ import * as NodeOS from "node:os";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientResponse from "effect/http/HttpClientResponse";
 
 import * as Electron from "electron";
 
 import * as NetService from "@t3tools/shared/Net";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { parsePersistedExowattPeerInbound } from "@t3tools/shared/serverSettings";
 import type { RemoteT3RunnerOptions } from "@t3tools/ssh/tunnel";
 import serverPackageJson from "../../server/package.json" with { type: "json" };
 
 import * as DesktopIpc from "./ipc/DesktopIpc.ts";
+import * as IpcChannels from "./ipc/channels.ts";
 import * as ElectronApp from "./electron/ElectronApp.ts";
 import * as ElectronDialog from "./electron/ElectronDialog.ts";
 import * as ElectronMenu from "./electron/ElectronMenu.ts";
@@ -32,7 +37,6 @@ import * as ElectronProtocol from "./electron/ElectronProtocol.ts";
 import * as ElectronSafeStorage from "./electron/ElectronSafeStorage.ts";
 import * as ElectronShell from "./electron/ElectronShell.ts";
 import * as ElectronTheme from "./electron/ElectronTheme.ts";
-import * as ElectronUpdater from "./electron/ElectronUpdater.ts";
 import * as ElectronWindow from "./electron/ElectronWindow.ts";
 import * as DesktopApp from "./app/DesktopApp.ts";
 import * as DesktopAppActivation from "./app/DesktopAppActivation.ts";
@@ -63,12 +67,14 @@ import * as DesktopPreReadyPlatform from "./app/DesktopPreReadyPlatform.ts";
 import * as DesktopShellEnvironment from "./shell/DesktopShellEnvironment.ts";
 import * as DesktopSshEnvironment from "./ssh/DesktopSshEnvironment.ts";
 import * as DesktopSshPasswordPrompts from "./ssh/DesktopSshPasswordPrompts.ts";
+import * as ExowattRemoteServerSource from "./ssh/ExowattRemoteServerSource.ts";
 import * as DesktopState from "./app/DesktopState.ts";
 import * as DesktopLegacyLocalStorage from "./app/DesktopLegacyLocalStorage.ts";
 import * as DesktopTelemetryPublisher from "./telemetry/DesktopTelemetryPublisher.ts";
 import * as DesktopRendererHistory from "./telemetry/DesktopRendererHistory.ts";
 import * as DesktopUpdatePolicy from "./updates/DesktopUpdatePolicy.ts";
 import * as DesktopUpdates from "./updates/DesktopUpdates.ts";
+import * as DesktopUpdateTransport from "./updates/DesktopUpdateTransport.ts";
 import * as BrowserImport from "./preview/BrowserImport/BrowserImport.ts";
 import * as LinuxBrowserSecret from "./preview/BrowserImport/LinuxBrowserSecret.ts";
 import * as BrowserSession from "./preview/BrowserSession.ts";
@@ -87,6 +93,15 @@ if (process.argv.includes("--version")) {
     if (!(error instanceof Error) || !("code" in error) || error.code !== "EPIPE") throw error;
   }
   Electron.app.exit(0);
+}
+
+// exowatt: a dev build running on the installed app's state (exowatt/dev-launcher) must decrypt it.
+// safeStorage's Keychain item ("<name> Safe Storage") comes from app.name before `ready`: packaged
+// "t3code", dev "Electron". So the override sets the name synchronously at module load, before
+// Electron finishes pre-ready init.
+const keychainAppNameOverride = process.env.T3CODE_DESKTOP_KEYCHAIN_APP_NAME?.trim();
+if (keychainAppNameOverride && !Electron.app.isPackaged) {
+  Electron.app.setName(keychainAppNameOverride);
 }
 
 const layerDesktopEnvironment = Layer.unwrap(
@@ -119,11 +134,59 @@ const resolveDesktopSshCliRunner = (
   return { archiveVersion: environment.appVersion };
 };
 
+/** Exowatt: the local server's environment id, from its unauthenticated descriptor. */
+const readLocalEnvironmentId = (httpClient: HttpClient.HttpClient, port: number) =>
+  httpClient.get(`http://127.0.0.1:${port}/.well-known/t3/environment`).pipe(
+    Effect.flatMap(HttpClientResponse.schemaBodyJson(LocalEnvironmentDescriptor)),
+    Effect.map((descriptor) => descriptor.environmentId),
+    Effect.scoped,
+    Effect.timeout("5 seconds"),
+    Effect.orElseSucceed(() => null),
+  );
+const LocalEnvironmentDescriptor = Schema.Struct({ environmentId: Schema.String });
+
 const layerDesktopSshEnvironment = Layer.unwrap(
   Effect.gen(function* () {
     const environment = yield* DesktopEnvironment.DesktopEnvironment;
+    const electronWindow = yield* ElectronWindow.ElectronWindow;
+    // An unreadable settings file means peer inbound is off.
+    const readLocalPeerInbound = Effect.try({
+      try: () =>
+        parsePersistedExowattPeerInbound(
+          NodeFS.readFileSync(environment.serverSettingsPath, "utf8"),
+        ),
+      catch: () => undefined,
+    }).pipe(Effect.orElseSucceed(() => "off" as const));
+    // Exowatt: remotes run a compatible installed P3 server (or the bundled
+    // one, verified alongside `phi`) — never upstream's `npx t3@<version>`,
+    // in dev builds too. Background upgrades report to the renderer as a toast.
+    const prepareRemoteRunner = ExowattRemoteServerSource.resolveExowattPrepareRemoteRunner({
+      environment,
+      onEvent: (event) =>
+        electronWindow.sendAll(IpcChannels.EXOWATT_REMOTE_SERVER_EVENT_CHANNEL, event),
+    });
+    // Exowatt: each SSH tunnel also forwards back to this desktop's server, so the remote's
+    // agents can reach it through a reverse peer link. 0 means the backend has no port yet;
+    // the environment id names the remote socket so reconnects can clear stale ones.
+    const exposure = yield* DesktopServerExposure.DesktopServerExposure;
+    const httpClient = yield* HttpClient.HttpClient;
+    // Only when this desktop accepts agents from its other environments, read at tunnel
+    // start: a change to that setting applies from the next reconnect.
+    const reverseForward = Effect.all([exposure.backendConfig, readLocalPeerInbound]).pipe(
+      Effect.flatMap(([config, inbound]) =>
+        config.port > 0 && inbound !== "off"
+          ? readLocalEnvironmentId(httpClient, config.port).pipe(
+              Effect.map((environmentId) =>
+                environmentId === null ? null : { port: config.port, environmentId },
+              ),
+            )
+          : Effect.succeed(null),
+      ),
+    );
     return DesktopSshEnvironment.layer({
       resolveCliRunner: Effect.succeed(resolveDesktopSshCliRunner(environment)),
+      prepareRemoteRunner,
+      reverseForward,
     });
   }),
 );
@@ -137,7 +200,6 @@ const layerElectron = Layer.mergeAll(
   ElectronSafeStorage.layer,
   ElectronShell.layer,
   ElectronTheme.layer,
-  ElectronUpdater.layer,
   ElectronWindow.layer,
   DesktopIpc.layer(Electron.ipcMain),
 );
@@ -240,6 +302,7 @@ const layerDesktopApplicationRuntime = layerDesktopApplication.pipe(
   Layer.provideMerge(NodeHttpClient.layerUndici),
   Layer.provideMerge(NetService.layer),
   Layer.provideMerge(layerElectron),
+  Layer.provideMerge(DesktopUpdateTransport.layerNone),
 );
 
 // Pre-ready setup and Clerk must not yield before Clerk registers its scheme.

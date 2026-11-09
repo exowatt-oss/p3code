@@ -23,6 +23,19 @@ describe("composer list continuation", () => {
     );
   });
 
+  it("inserts before trailing paragraphs and preserves later items", () => {
+    const value = "- first\n- last\n\nfollowing paragraph";
+    const cursor = value.indexOf("\n\nfollowing");
+    const edit = listContinuationForEnter(value, cursor)!;
+    expect(applyEdit(value, edit)).toBe("- first\n- last\n- \n\nfollowing paragraph");
+    expect(edit.start + edit.replacement.length).toBe("- first\n- last\n- ".length);
+
+    const middle = "- first\n- middle\n- last\nfollowing paragraph";
+    expect(applyEdit(middle, listContinuationForEnter(middle, middle.indexOf("\n- last"))!)).toBe(
+      "- first\n- middle\n- \n- last\nfollowing paragraph",
+    );
+  });
+
   it("splits mid-line items", () => {
     expect(applyEdit("1. foobar", listContinuationForEnter("1. foobar", 5)!)).toBe(
       "1. fo\n2. obar",

@@ -249,6 +249,19 @@ async function setup() {
 }
 
 describe("EnvironmentProviderSettings routing", () => {
+  // exowatt: Phi is P3's default harness, enabled by default and listed first.
+  it("lists Phi first and opens it by default", async () => {
+    await setup();
+    await using screen = await render(panel());
+    await expect.element(page.getByRole("button", { name: "Select Phi" })).toBeVisible();
+    const selectLabels = Array.from(
+      screen.container.querySelectorAll('[aria-label^="Select "]'),
+      (element) => element.getAttribute("aria-label"),
+    );
+    expect(selectLabels[0]).toBe("Select Phi");
+    expect(selectLabels).toContain("Select Codex");
+  });
+
   it("does not substitute another account when the requested instance was removed", async () => {
     await setup();
     await setProviders([provider()]);

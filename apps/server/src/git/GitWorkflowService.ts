@@ -46,6 +46,9 @@ export class GitWorkflowService extends Context.Service<
       readonly cwd: string;
       readonly refName: string;
     }) => Effect.Effect<boolean, GitCommandError>;
+    readonly resolveCommit: (
+      input: GitVcsDriver.GitResolveCommitInput,
+    ) => Effect.Effect<GitVcsDriver.GitResolveCommitResult, GitCommandError>;
     readonly status: (
       input: VcsStatusInput,
     ) => Effect.Effect<VcsStatusResult, GitManagerServiceError>;
@@ -125,6 +128,11 @@ export class GitWorkflowService extends Context.Service<
     readonly switchRef: (
       input: VcsSwitchRefInput,
     ) => Effect.Effect<VcsSwitchRefResult, GitCommandError>;
+    readonly reattachDetachedHead: (input: {
+      readonly cwd: string;
+      readonly refName: string;
+      readonly expectedSha: string;
+    }) => Effect.Effect<{ readonly refName: string }, GitCommandError>;
     readonly renameBranch: (input: {
       readonly exactName?: boolean;
       readonly cwd: string;
@@ -318,6 +326,11 @@ export const make = Effect.gen(function* () {
             Effect.map((result) => result.stdout.trim().length > 0),
           );
     }),
+    resolveCommit: Effect.fn("GitWorkflowService.resolveCommit")(function (input) {
+      return ensureGitCommand("GitWorkflowService.resolveCommit", input.cwd).pipe(
+        Effect.andThen(git.resolveCommit(input)),
+      );
+    }),
     status: Effect.fn("GitWorkflowService.status")(function (input) {
       return detectGitRepositoryForStatus("GitWorkflowService.status", input.cwd).pipe(
         Effect.flatMap((isGitRepository) =>
@@ -485,6 +498,12 @@ export const make = Effect.gen(function* () {
         Effect.flatMap((handle) =>
           withCheckoutLease(handle.repository.rootPath, Effect.scoped(git.switchRef(input))),
         ),
+      );
+    }),
+    // exowatt: no checkout lease here; thread-turn start already holds this worktree's lease.
+    reattachDetachedHead: Effect.fn("GitWorkflowService.reattachDetachedHead")(function (input) {
+      return ensureGitCommand("GitWorkflowService.reattachDetachedHead", input.cwd).pipe(
+        Effect.andThen(git.reattachDetachedHead(input)),
       );
     }),
     renameBranch: Effect.fn("GitWorkflowService.renameBranch")(function (input) {

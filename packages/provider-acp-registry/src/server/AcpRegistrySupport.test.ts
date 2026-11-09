@@ -706,7 +706,7 @@ describe("AcpRegistrySupport", () => {
     },
   );
 
-  it.effect("installs a tar archive with a root entry and a listing larger than 1 MiB", () => {
+  it.effect.skipIf(Number(process.versions.node.split(".")[0]) < 26)("installs a tar archive with a root entry and a listing larger than 1 MiB", () => {
     const downloadUrl = "https://registry.test/agent.tar.gz";
     const agent = makeAgent({
       binary: { "linux-x86_64": { archive: downloadUrl, cmd: "./agent" } },

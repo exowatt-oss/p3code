@@ -70,6 +70,49 @@ const PROVIDER_FAILURE_REASONS: Record<ProviderAdapterFailureReason, string> = {
   attachment_unreadable: "an attachment could not be read",
 };
 
+/** Only extract a known diagnosis, never an arbitrary error message: spawn errors can include argv/env. */
+function providerStartDiagnosis(value: unknown): string | undefined {
+  if (!(value instanceof Error)) return undefined;
+  const text = stringField(value, "message") ?? "";
+  const code = stringField(value, "code");
+  const knownCodes = [
+    "ENOENT",
+    "EACCES",
+    "ECONNREFUSED",
+    "ETIMEDOUT",
+    "ENOTFOUND",
+    "ECONNRESET",
+  ] as const;
+  // A structured code takes priority. Only diagnose message text with an error
+  // signature at its start, not incidental tokens in an argv or file path.
+  const diagnosed =
+    code === undefined
+      ? /^(?:(?:spawn\s+(?:\S+\s+)?|connect\s+|getaddrinfo\s+|read\s+|open\s+)?)(ENOENT|EACCES|ECONNREFUSED|ETIMEDOUT|ENOTFOUND|ECONNRESET)\b/u.exec(
+          text,
+        )?.[1]
+      : knownCodes.find((candidate) => code === candidate);
+  const spawn = stringField(value, "syscall")?.startsWith("spawn") || /^spawn\b/u.test(text);
+  switch (diagnosed) {
+    case "ENOENT":
+      return spawn
+        ? "Provider turn startup failed (spawn): executable or file not found (ENOENT)."
+        : "Provider turn startup failed: file not found (ENOENT).";
+    case "EACCES":
+      return spawn
+        ? "Provider turn startup failed (spawn): permission denied (EACCES)."
+        : "Provider turn startup failed: permission denied (EACCES).";
+    case "ECONNREFUSED":
+      return "Provider turn startup failed (connection): connection refused (ECONNREFUSED).";
+    case "ETIMEDOUT":
+      return "Provider turn startup failed (connection): connection timed out (ETIMEDOUT).";
+    case "ENOTFOUND":
+      return "Provider turn startup failed (connection): host not found (ENOTFOUND).";
+    case "ECONNRESET":
+      return "Provider turn startup failed (connection): connection reset (ECONNRESET).";
+  }
+  return undefined;
+}
+
 /**
  * Walks a cause chain for curated text without reading arbitrary provider
  * defect text. `known` is the message of a domain error T3 raised itself;
@@ -82,6 +125,8 @@ function curatedCauseMessages(cause: unknown): {
   const seen = new Set<unknown>();
   let category: (typeof PROVIDER_FAILURE_CATEGORIES)[string];
   let reason: string | undefined;
+  // exowatt: diagnose startup errors by known code only, never by raw text.
+  let insideProviderStartError = false;
   const categoryMessage = () => {
     if (category === undefined) return undefined;
     return reason
@@ -95,8 +140,21 @@ function curatedCauseMessages(cause: unknown): {
         cause = Cause.squash(cause);
         continue;
       }
-      if (typeof cause !== "object") break;
+      if (typeof cause !== "object") {
+        if (
+          insideProviderStartError &&
+          cause === "This provider does not support context compaction."
+        ) {
+          return { known: cause, category: categoryMessage() };
+        }
+        break;
+      }
       const tag = (cause as Record<string, unknown>)._tag;
+      // A typed reason (e.g. attachment_unreadable) outranks the code diagnosis.
+      if (insideProviderStartError && tag === undefined && reason === undefined) {
+        const diagnosis = providerStartDiagnosis(cause);
+        if (diagnosis !== undefined) return { known: diagnosis, category: categoryMessage() };
+      }
       switch (tag) {
         case "ContextHandoffBudgetError":
           return { known: new ContextHandoffBudgetError().message, category: categoryMessage() };
@@ -159,6 +217,7 @@ function curatedCauseMessages(cause: unknown): {
       if (typeof tag === "string" && Object.hasOwn(PROVIDER_FAILURE_CATEGORIES, tag)) {
         category = PROVIDER_FAILURE_CATEGORIES[tag];
         reason = undefined;
+        if (tag === "ProviderAdapterTurnStartError") insideProviderStartError = true;
       }
       cause = (cause as Record<string, unknown>).cause;
     } catch {
@@ -186,7 +245,7 @@ export function knownProviderFailureMessage(cause: unknown): string | undefined 
   return curatedCauseMessages(cause).known;
 }
 
-function stringField(value: unknown, key: "message" | "code"): string | undefined {
+function stringField(value: unknown, key: "message" | "code" | "syscall"): string | undefined {
   if (typeof value !== "object" || value === null) return undefined;
   try {
     const candidate = (value as Record<string, unknown>)[key];
@@ -227,20 +286,50 @@ function replaceUnsafeControlCharacters(value: string): string {
   return sanitized.join("");
 }
 
+const SENTENCE_PUNCTUATION = new Set([".", ",", ";", ":", "!", "?", ")"]);
+
+/** Redacts a whole path token but keeps the sentence punctuation that ends it. */
+function redactPathToken(_match: string, prefix: string, path: string): string {
+  let end = path.length;
+  while (end > 1 && SENTENCE_PUNCTUATION.has(path[end - 1] ?? "")) end -= 1;
+  return `${prefix}[REDACTED_PATH]${path.slice(end)}`;
+}
+
 function redactProviderFailureText(value: string): string {
-  return replaceUnsafeControlCharacters(value)
-    .replace(/\bhttps?:\/\/[^\s<>"']+/giu, redactUrl)
-    .replace(/\b(Bearer|Basic)\s+[^\s,;]+/giu, "$1 [REDACTED]")
-    .replace(
-      /(["'][\w-]*(?:access[_-]?token|api[_-]?key|authorization|credential|password|secret|token)["']\s*:\s*["'])[^"']*(["'])/giu,
-      "$1[REDACTED]$2",
-    )
-    .replace(
-      /((?<![\w-])[\w-]*(?:access[_-]?token|api[_-]?key|authorization|credential|password|secret|token)\b\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu,
-      "$1[REDACTED]",
-    )
-    .replace(/\bsk-[A-Za-z0-9_-]{16,}\b/gu, "[REDACTED]")
-    .trim();
+  return (
+    replaceUnsafeControlCharacters(value)
+      .replace(/\bhttps?:\/\/[^\s<>"']+/giu, redactUrl)
+      // File URLs and quoted paths may contain spaces or the other quote type.
+      .replace(/"file:\/\/[^"<>]*"|'file:\/\/[^'<>]*'/giu, "[REDACTED_PATH]")
+      .replace(/\bfile:\/\/[^\s<>"]+/giu, (match) => redactPathToken(match, "", match))
+      .replace(/"\/(?!\/)[^"<>]*"|'\/(?!\/)[^'<>]*'/gu, "[REDACTED_PATH]")
+      .replace(/"(?:\/\/|\.\.?\/|~\/)[^"<>]*"|'(?:\/\/|\.\.?\/|~\/)[^'<>]*'/gu, "[REDACTED_PATH]")
+      .replace(/"[A-Za-z]:[\\/][^"<>]*"|'[A-Za-z]:[\\/][^'<>]*'/gu, "[REDACTED_PATH]")
+      .replace(/"\\\\[^"<>]*"|'\\\\[^'<>]*'/gu, "[REDACTED_PATH]")
+      // Colon is a path-list separator, not a URL start (the second slash of
+      // :// follows a slash). Consume whole unquoted tokens (list separators,
+      // filename dots) but leave trailing sentence punctuation outside them.
+      // A bare slash command ("/compact", "/login") is guidance, not a path.
+      .replace(
+        /(^|[\s("'=:])(\/(?!\/)(?![a-z][a-z0-9_-]*(?=$|[\s,.;:!?)"']))\S+)/gu,
+        redactPathToken,
+      )
+      .replace(/(^|[\s("'=])(\/\/\S+)/gu, redactPathToken)
+      .replace(/(^|[\s("'=:])((?:\.\.?\/|~\/)\S+)/gu, redactPathToken)
+      .replace(/(^|[\s("'=:])([A-Za-z]:[\\/]\S+)/gu, redactPathToken)
+      .replace(/(^|[\s("'=:])(\\\\\S+)/gu, redactPathToken)
+      .replace(/\b(Bearer|Basic)\s+[^\s,;]+/giu, "$1 [REDACTED]")
+      .replace(
+        /(["'][\w-]*(?:access[_-]?token|api[_-]?key|authorization|credential|password|secret|token)["']\s*:\s*["'])[^"']*(["'])/giu,
+        "$1[REDACTED]$2",
+      )
+      .replace(
+        /((?<![\w-])[\w-]*(?:access[_-]?token|api[_-]?key|authorization|credential|password|secret|token)\b\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/giu,
+        "$1[REDACTED]",
+      )
+      .replace(/\bsk-[A-Za-z0-9_-]{16,}\b/gu, "[REDACTED]")
+      .trim()
+  );
 }
 
 function boundedText(value: string, maxLength: number): string {

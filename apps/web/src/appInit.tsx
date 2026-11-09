@@ -11,6 +11,8 @@ import { startPreviewTitleRecording } from "./browserHistoryStore";
 import { retainThreadOverlaysForThread } from "./components/chat/threadOverlayRetention";
 import { startBackgroundThreadAnnouncements } from "./components/BackgroundThreadAnnouncer";
 import { startSshPasswordPromptQueue } from "./components/desktop/SshPasswordPromptDialog";
+import { startExowattRemoteServerEventToasts } from "./components/desktop/ExowattRemoteServerEventToasts";
+import { startExowattCustomization } from "./components/exowatt-customize/ExowattCustomizeSync";
 import { startHostFreezeToasts } from "./components/HostFreezeToastCoordinator";
 import { startKeybindingsUpdateToasts } from "./components/KeybindingsUpdateToast";
 import { startLegacyThreadMigrationToast } from "./components/LegacyThreadMigrationToast";
@@ -29,6 +31,8 @@ import {
   subscribeDraftThreadPromotion,
   useComposerDraftStore,
 } from "./composerDraftStore";
+import { startAppNavigationHistory } from "./hooks/useAppNavigationHistory";
+import { startClientSettingsPushAdoption } from "./hooks/useClientSettingsPush";
 import { startDefaultThemeAdoption } from "./hooks/useDefaultTheme";
 import { startEnvironmentThemeRepaint } from "./hooks/useEnvironmentTheme";
 import { readLocalStorageValue, subscribeLocalStorageKey } from "./hooks/useLocalStorage";
@@ -39,6 +43,7 @@ import {
   subscribeClientSettings,
 } from "./hooks/useSettings";
 import { syncBrowserChromeTheme } from "./hooks/useTheme";
+import { startThreadFocusRequestAdoption } from "./hooks/useThreadFocusRequest";
 import { startThreadVisitedMigration } from "./hooks/useThreadVisitedMigration";
 import { installDesktopPasteAsText } from "./lib/desktopPasteAsText";
 import {
@@ -180,11 +185,17 @@ export function startAppServices(): AppRouter {
   installDesktopPasteAsText(window.desktopBridge, window);
 
   startClientAppearance();
+  // exowatt: P3 accent, density and motion ride on the appearance settings.
+  startExowattCustomization();
   startDocumentTitle();
   startHostEnvironmentLookup();
   startEnvironmentThemeRepaint();
   startBrowserChromeThemeSync(router);
   startDefaultThemeAdoption();
+  // exowatt: MCP client_settings_apply and thread_focus pushes, mouse history.
+  startClientSettingsPushAdoption();
+  startThreadFocusRequestAdoption(router);
+  startAppNavigationHistory(router);
   startModelPreferencesMigration();
   startAgentOpenedPreviews();
   if (isElectron) startElectronBrowserHost();
@@ -220,6 +231,7 @@ export function startAppServices(): AppRouter {
   startThreadNotifications(appAtomRegistry, router);
   startGuideRunNotifications(appAtomRegistry, router);
   if (isElectron) startDesktopUpdateLaunchNotice();
+  if (isElectron) startExowattRemoteServerEventToasts();
 
   return router;
 }

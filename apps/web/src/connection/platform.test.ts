@@ -250,6 +250,15 @@ describe("desktop SSH pairing", () => {
     }),
   );
 
+  // exowatt: a P3 remote already passed the desktop's compat check, so its 500 is not a version block.
+  it.effect("never blocks a P3 server on version inequality", () =>
+    Effect.gen(function* () {
+      expect(yield* failPairing("0.1.3-exowatt.4", PAIRING_500)).toBeInstanceOf(
+        ConnectionTransientError,
+      );
+    }),
+  );
+
   it.effect("keeps retrying pairing failures that are not a version mismatch", () =>
     Effect.gen(function* () {
       expect(yield* failPairing(APP_VERSION, PAIRING_500)).toBeInstanceOf(ConnectionTransientError);

@@ -827,6 +827,9 @@ export function ThemeLibrary({
 
   return (
     <div className="space-y-3">
+      <p className="px-3 text-xs text-muted-foreground/80 sm:px-4">
+        Choose how P3 Code looks. Use a built-in theme or make your own.
+      </p>
       <h3 className="flex min-h-7 items-center px-3 text-base font-semibold text-foreground sm:px-4">
         {searchableSetting("color-scheme").title}
       </h3>

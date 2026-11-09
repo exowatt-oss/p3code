@@ -16,6 +16,8 @@ import type {
   ProviderUsageReaderEnv,
 } from "@t3tools/provider-core/server/driver";
 import { KiroDriver, type KiroDriverEnv } from "@t3tools/provider-kiro/server";
+// exowatt: Phi is P3 Code's default harness.
+import { PhiDriver, type PhiDriverEnv } from "./Drivers/PhiDriver.ts";
 
 export type BuiltInDriversEnv =
   | AcpRegistryDriverEnv
@@ -27,10 +29,12 @@ export type BuiltInDriversEnv =
   | GrokDriverEnv
   | KiroDriverEnv
   | OpenCodeDriverEnv
+  | PhiDriverEnv
   | PiDriverEnv
   | MuseDriverEnv;
 
 export const BUILT_IN_DRIVERS: ReadonlyArray<AnyProviderDriver<BuiltInDriversEnv>> = [
+  PhiDriver, // exowatt: listed first, P3 Code's default harness.
   CodexDriver,
   ClaudeDriver,
   CursorDriver,

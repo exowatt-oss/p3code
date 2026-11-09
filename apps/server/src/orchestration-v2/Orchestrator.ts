@@ -192,6 +192,7 @@ import {
 import { planThreadDeletion } from "./ThreadDeletion.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ServerSettings from "../serverSettings.ts";
+import { isPeerMessageId, peerInboundAllows } from "../exowattPeerEnvironments/PeerGate.ts";
 
 const isMessageQuestionAnswer = Schema.is(
   Schema.Union([TrimmedNonEmptyString, Schema.NonEmptyArray(TrimmedNonEmptyString)]),
@@ -828,6 +829,55 @@ function nextQueuedRun(
   return queuedRunsInDeliveryOrder(projection).find((run) => run.queueHeld !== true);
 }
 
+function queuedRunCancelledEvents(
+  projection: Pick<OrchestrationV2ThreadProjection, "nodes" | "attempts">,
+  run: OrchestrationV2Run,
+  now: DateTime.Utc,
+): Array<Omit<OrchestrationV2DomainEvent, "id">> {
+  const rootNode =
+    run.rootNodeId === null
+      ? undefined
+      : projection.nodes.find((candidate) => candidate.id === run.rootNodeId);
+  const attempt =
+    run.activeAttemptId === null
+      ? undefined
+      : projection.attempts.find((candidate) => candidate.id === run.activeAttemptId);
+  const at = {
+    threadId: run.threadId,
+    runId: run.id,
+    providerInstanceId: run.providerInstanceId,
+    occurredAt: now,
+  };
+  return [
+    {
+      type: "run.updated",
+      ...at,
+      ...(run.rootNodeId === null ? {} : { nodeId: run.rootNodeId }),
+      payload: { ...run, status: "cancelled", queuePosition: null, completedAt: now },
+    },
+    ...(attempt === undefined || rootNode === undefined
+      ? []
+      : [
+          {
+            type: "run-attempt.updated" as const,
+            ...at,
+            nodeId: rootNode.id,
+            payload: { ...attempt, status: "cancelled" as const, completedAt: now },
+          },
+        ]),
+    ...(rootNode === undefined
+      ? []
+      : [
+          {
+            type: "node.updated" as const,
+            ...at,
+            nodeId: rootNode.id,
+            payload: { ...rootNode, status: "cancelled" as const, completedAt: now },
+          },
+        ]),
+  ];
+}
+
 function followsCurrentConversation(
   message: OrchestrationV2ConversationMessage | undefined,
 ): boolean {
@@ -987,9 +1037,14 @@ export function shouldPrepareLegacyImportHandoff(input: {
   readonly hasCompletedRun: boolean;
   readonly historyOrigin: OrchestrationV2AppThread["historyOrigin"];
   readonly legacyImportItemCount: number;
+  // exowatt: a v1 thread whose native session was carried over resumes with its own history.
+  readonly hasNativeProviderThread?: boolean;
 }): boolean {
   return (
-    input.historyOrigin === "v1_import" && !input.hasCompletedRun && input.legacyImportItemCount > 0
+    input.historyOrigin === "v1_import" &&
+    !input.hasCompletedRun &&
+    input.legacyImportItemCount > 0 &&
+    input.hasNativeProviderThread !== true
   );
 }
 
@@ -1707,7 +1762,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     ]);
   });
 
-  const startNextQueuedRun = Effect.fn("Orchestrator.startNextQueuedRun")(
+  const startQueuedRunOnce = Effect.fn("Orchestrator.startQueuedRunOnce")(
     function* (
       threadId: ThreadId,
       options?: {
@@ -1734,6 +1789,27 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             );
       if (storedQueuedRun === undefined) {
         return;
+      }
+      const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
+      // exowatt: peer work is re-checked against this server's inbound gate as it starts.
+      // The verdict is per thread, so every queued peer run on it goes at once.
+      if (
+        isPeerMessageId(storedQueuedRun.userMessageId) &&
+        !peerInboundAllows(settings.exowattPeerInbound, projection.thread.runtimeMode)
+      ) {
+        const now = yield* DateTime.now;
+        const refused = projection.runs.filter(
+          (run) => run.status === "queued" && isPeerMessageId(run.userMessageId),
+        );
+        yield* writeSystemEvents(
+          refused.flatMap((run) => queuedRunCancelledEvents(projection, run, now)),
+        );
+        yield* Effect.logInfo("cancelled queued linked-environment runs the inbound gate refuses", {
+          threadId,
+          cancelled: refused.length,
+          inbound: settings.exowattPeerInbound,
+        });
+        return "peer-refused" as const;
       }
       const queuedMessage = projection.messages.find(
         (candidate) => candidate.id === storedQueuedRun.userMessageId,
@@ -1762,7 +1838,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         failedRun?.id === options?.endedRunId &&
         failedRun?.workspacePreparation?.type === "worktree" &&
         projection.thread.worktreePath === null;
-      const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
       const projectOverride =
         settings.projectSettingsOverrides[projection.thread.projectId]?.providerInstances?.[
           queuedRun.providerInstanceId
@@ -2568,6 +2643,25 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         payload: { ...run, queueHeld: false },
       })),
     );
+  });
+
+  // exowatt: the peer gate can refuse the queue head; then try the next queued run once.
+  const startNextQueuedRun = Effect.fn("Orchestrator.startNextQueuedRun")(function* (
+    threadId: ThreadId,
+    options?: {
+      readonly failedRunId?: RunId;
+      readonly endedRunId?: RunId;
+      readonly queuedRunId?: RunId;
+    },
+  ) {
+    if ((yield* startQueuedRunOnce(threadId, options)) !== "peer-refused") return;
+    // An explicit start names one run; never start a different one in its place.
+    if (options?.queuedRunId !== undefined) {
+      return yield* Effect.fail(
+        `Run ${options.queuedRunId} came from a linked environment and the peer gate refused it.`,
+      );
+    }
+    yield* startQueuedRunOnce(threadId, options);
   });
 
   const resumeQueuedRuns = Effect.gen(function* () {
@@ -3578,6 +3672,41 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               .pipe(mapDispatchError(command));
           })
         : null;
+
+    // Phi can change its live agent model between tool calls. The v2
+    // transition plan only records the selection for the next turn; apply it
+    // to the current process as well, before persisting the selection. A
+    // failed set_model must not leave the thread claiming a different model.
+    if (
+      command.type === "thread.model-selection.set" &&
+      providerSwitchPlan?.transition.type === "switch_model_in_session" &&
+      thread.modelSelection.instanceId === command.modelSelection.instanceId &&
+      !modelSelectionsEqual(thread.modelSelection, command.modelSelection)
+    ) {
+      const activeProviderSessionId = providerContext?.providerThreads.find(
+        (candidate) => candidate.id === thread.activeProviderThreadId,
+      )?.providerSessionId;
+      const livePhi = (providerContext?.providerSessions ?? [])
+        .filter(
+          (session) =>
+            session.driver === "phi" &&
+            session.providerInstanceId === command.modelSelection.instanceId &&
+            (activeProviderSessionId == null || session.id === activeProviderSessionId) &&
+            session.status !== "stopped" &&
+            session.status !== "error",
+        )
+        .toSorted(
+          (a, b) =>
+            Number(b.id === activeProviderSessionId) - Number(a.id === activeProviderSessionId) ||
+            DateTime.toEpochMillis(b.updatedAt) - DateTime.toEpochMillis(a.updatedAt),
+        );
+      for (const session of livePhi) {
+        const runtime = yield* mapDispatchError(command)(providerSessions.get(session.id));
+        if (Option.isNone(runtime) || runtime.value.setModelSelection === undefined) continue;
+        yield* mapDispatchError(command)(runtime.value.setModelSelection(command.modelSelection));
+        break;
+      }
+    }
 
     const now = yield* DateTime.now;
     if (command.type === "thread.metadata.update" && command.limitRecovery != null) {
@@ -5614,7 +5743,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     command: Extract<OrchestrationV2Command, { readonly type: "message.dispatch" }>,
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
-  ) {
+  ): Effect.fn.Return<
+    | {
+        readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
+        readonly reason: string;
+      }
+    | undefined,
+    OrchestratorV2Error
+  > {
     let projection = yield* getProjectionWithPendingEvents(command.threadId, events);
     if (command.manualContinuationOfRunId !== undefined) {
       const source = projection.runs.find((run) => run.id === command.manualContinuationOfRunId);
@@ -6057,6 +6193,34 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             occurredAt,
             payload: { ...sourcePlan, status: "completed" },
           });
+
+    // Phi workspace-state hand-backs are passive: any ordinary next message
+    // supersedes the question, even if the provider session was recreated and
+    // its in-memory onTurnStart hook no longer remembers the pending request.
+    if (command.notification === undefined && delegatedCompletion === undefined) {
+      for (const request of projection.runtimeRequests) {
+        if (
+          request.status !== "pending" ||
+          request.kind !== "user_input" ||
+          request.responseCapability.type !== "message" ||
+          request.nativeRequestRef?.driver !== "phi" ||
+          !request.nativeRequestRef.nativeId?.startsWith("workspace-state:")
+        ) {
+          continue;
+        }
+        yield* dispatchRuntimeRequestRespond(
+          {
+            type: "runtime-request.respond",
+            commandId: command.commandId,
+            threadId: command.threadId,
+            requestId: request.id,
+            decision: "cancel",
+          },
+          events,
+          effects,
+        );
+      }
+    }
 
     if (dispatchMode.type === "steer_active" || dispatchMode.type === "restart_active") {
       yield* dispatchSteerIntoRun({
@@ -6575,6 +6739,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         historyOrigin: projection.thread.historyOrigin,
         hasCompletedRun: latestCompletedRun !== undefined,
         legacyImportItemCount: legacyImportItems.length,
+        hasNativeProviderThread: activeProviderThread?.nativeThreadRef != null, // exowatt
       })
         ? yield* contextHandoffService
             .prepareLegacyImport({
@@ -9279,7 +9444,14 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       command: Extract<OrchestrationV2Command, { readonly type: "runtime-request.respond" }>,
       events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
       effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
-    ) {
+    ): Effect.fn.Return<
+      | {
+          readonly effectTypes: ReadonlyArray<OrchestrationEffectRequestV2["type"]>;
+          readonly reason: string;
+        }
+      | undefined,
+      OrchestratorV2Error
+    > {
       const context = yield* projectionStore
         .getRuntimeResponseContext(command.threadId, command.requestId)
         .pipe(
@@ -9608,7 +9780,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           dispatchMode,
         };
         yield* dispatchMessage(answer, events, effects);
-        return yield* recordSubagentFollowup(answer, events).pipe(mapDispatchError(answer));
+        yield* recordSubagentFollowup(answer, events).pipe(mapDispatchError(answer));
+        return;
       }
       if (providerSessionId === null) return;
       if (runtimeRequest.kind === "user_input" && resolvedNodeStatus === "completed") {
@@ -9782,6 +9955,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandType: command.type,
         cause: `Queued run ${command.queuedRunId} is not queued.`,
       });
+    }
+    if (isPeerMessageId(queuedRun.userMessageId)) {
+      const settings = yield* serverSettings.getSettings.pipe(Effect.orDie);
+      if (!peerInboundAllows(settings.exowattPeerInbound, projection.thread.runtimeMode)) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Queued run ${queuedRun.id} came from a linked environment and the peer gate refused it.`,
+        });
+      }
     }
     const queuedRootNode =
       queuedRun.rootNodeId === null
@@ -10083,60 +10266,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
       return;
     }
-    const queuedRootNode =
-      queuedRun.rootNodeId === null
-        ? undefined
-        : projection.nodes.find((candidate) => candidate.id === queuedRun.rootNodeId);
-    const queuedAttempt =
-      queuedRun.activeAttemptId === null
-        ? undefined
-        : projection.attempts.find((candidate) => candidate.id === queuedRun.activeAttemptId);
-
     const now = yield* DateTime.now;
     const emitEvent = emit(events, command);
-    yield* emitEvent({
-      type: "run.updated",
-      threadId: command.threadId,
-      runId: queuedRun.id,
-      ...(queuedRun.rootNodeId === null ? {} : { nodeId: queuedRun.rootNodeId }),
-      providerInstanceId: queuedRun.providerInstanceId,
-      occurredAt: now,
-      payload: {
-        ...queuedRun,
-        status: "cancelled",
-        queuePosition: null,
-        completedAt: now,
-      },
-    });
-    if (queuedAttempt !== undefined && queuedRootNode !== undefined) {
-      yield* emitEvent({
-        type: "run-attempt.updated",
-        threadId: command.threadId,
-        runId: queuedRun.id,
-        nodeId: queuedRootNode.id,
-        providerInstanceId: queuedRun.providerInstanceId,
-        occurredAt: now,
-        payload: {
-          ...queuedAttempt,
-          status: "cancelled",
-          completedAt: now,
-        },
-      });
-    }
-    if (queuedRootNode !== undefined) {
-      yield* emitEvent({
-        type: "node.updated",
-        threadId: command.threadId,
-        runId: queuedRun.id,
-        nodeId: queuedRootNode.id,
-        providerInstanceId: queuedRun.providerInstanceId,
-        occurredAt: now,
-        payload: {
-          ...queuedRootNode,
-          status: "cancelled",
-          completedAt: now,
-        },
-      });
+    for (const event of queuedRunCancelledEvents(projection, queuedRun, now)) {
+      yield* emitEvent(event);
     }
     const guest = queuedMessage?.context?.guest;
     if (guest !== undefined) {

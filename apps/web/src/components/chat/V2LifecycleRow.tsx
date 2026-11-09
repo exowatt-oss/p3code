@@ -1,5 +1,6 @@
 import { ThreadHoverCardPopup } from "../ThreadHoverCard";
 import { AgentElapsed } from "./AgentElapsed";
+import { RunningSubagentActivity } from "./RunningSubagentActivity";
 import { projectedSubagentsToRuntime } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { ReactNode } from "react";
 import { useThreadShell, useProject } from "../../state/entities";
@@ -159,6 +160,7 @@ export function V2LifecycleRow(props: {
         progress={item.progress}
         startedAt={item.startedAt}
         completedAt={item.completedAt}
+        updatedAt={item.updatedAt}
         threadId={item.childThreadId}
         remote={item.remoteChild}
         onOpenThread={props.onOpenThread}
@@ -205,7 +207,12 @@ function plainDetail(text: string): string {
 }
 
 function isoOrNull(value: DateTime.Utc | null | undefined): string | null {
-  return value ? DateTime.formatIso(value) : null;
+  if (!value) return null;
+  try {
+    return DateTime.formatIso(value);
+  } catch {
+    return null; // An invalid timestamp means no activity signal, not a crashed row.
+  }
 }
 
 export function SubagentElapsed({ agent }: { agent: Parameters<typeof AgentElapsed>[0]["agent"] }) {
@@ -379,6 +386,7 @@ export function SubagentNotificationLink(props: {
       progress={agent.progress}
       startedAt={agent.startedAt}
       completedAt={agent.completedAt}
+      updatedAt={agent.updatedAt}
       threadId={props.childThreadId}
       onOpenThread={props.onOpenThread}
       {...(resumed
@@ -406,6 +414,7 @@ function SubagentTimelineLink(props: {
   readonly status: OrchestrationV2TurnItem["status"];
   readonly startedAt: DateTime.Utc | null;
   readonly completedAt: DateTime.Utc | null;
+  readonly updatedAt: DateTime.Utc;
   readonly threadId: ThreadId | null;
   /** The thread in a linked environment that runs this task, when it runs there. */
   readonly remote?: OrchestrationV2RemoteTaskChild | undefined;
@@ -423,7 +432,7 @@ function SubagentTimelineLink(props: {
   const remote = props.remote ?? agent?.remoteChild;
   const remoteEnvironment = useEnvironment(remote?.environmentId ?? null);
   const navigate = useNavigate();
-  const threadId = props.threadId;
+  const threadId = agent?.childThreadId ?? props.threadId;
   // A task in a linked environment opens there, if this client is connected to it.
   const open =
     threadId !== null
@@ -470,17 +479,28 @@ function SubagentTimelineLink(props: {
         </span>
         <span
           className={cn(
-            "block text-2xs leading-relaxed",
+            "flex min-w-0 items-baseline gap-1 text-2xs leading-relaxed",
             failed ? "text-destructive" : "text-muted-foreground",
           )}
         >
           {detail === null ? (
-            statusLabel
+            <span className="min-w-0 truncate">{statusLabel}</span>
           ) : detail.includes("/") && !detail.includes(" ") ? (
-            <MiddleTruncate value={detail} showTitle={false} className="flex" />
+            <MiddleTruncate value={detail} showTitle={false} className="min-w-0 flex-1" />
           ) : (
-            <span className="block truncate">{detail}</span>
+            <span className="min-w-0 flex-1 truncate">{detail}</span>
           )}
+          {status === "running" ? (
+            <RunningSubagentActivity
+              environmentId={props.parentRef.environmentId}
+              childThreadId={threadId}
+              status={status}
+              startedAt={timing.startedAt}
+              updatedAt={isoOrNull(agent?.updatedAt ?? props.updatedAt)}
+              progress={progress || null}
+              showAction={detail === null}
+            />
+          ) : null}
         </span>
       </span>
       {detail !== null && (props.event !== undefined || status !== "completed") ? (

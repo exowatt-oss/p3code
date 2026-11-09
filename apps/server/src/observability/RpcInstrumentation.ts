@@ -223,6 +223,30 @@ const RPC_AGGREGATES = {
   [WS_METHODS.subscribeServerConfig]: "server",
   [WS_METHODS.subscribeServerLifecycle]: "server",
   [WS_METHODS.subscribeAuthAccess]: "auth",
+  // exowatt: P3's harness, connector and feads RPCs report as "server"; the
+  // thread Hub and icons as "orchestration".
+  [WS_METHODS.exowattHarnessMcpList]: "server",
+  [WS_METHODS.exowattHarnessMcpAdd]: "server",
+  [WS_METHODS.exowattHarnessMcpToggle]: "server",
+  [WS_METHODS.exowattHarnessMcpStatus]: "server",
+  [WS_METHODS.exowattHarnessMcpConnect]: "server",
+  [WS_METHODS.exowattHarnessAssetList]: "server",
+  [WS_METHODS.exowattHarnessAssetToggle]: "server",
+  [WS_METHODS.exowattConnectorsIssueAgentToken]: "server",
+  [WS_METHODS.exowattConnectorsReconcile]: "server",
+  [WS_METHODS.exowattFeadsStatus]: "server",
+  [WS_METHODS.exowattFeadsConfigure]: "server",
+  [WS_METHODS.exowattFeadsClear]: "server",
+  [WS_METHODS.exowattFeadsTest]: "server",
+  [WS_METHODS.exowattFeadsAgentwatch]: "server",
+  [WS_METHODS.exowattFeadsMyIssues]: "server",
+  [WS_METHODS.exowattFeadsInbox]: "server",
+  [WS_METHODS.exowattFeadsAckNotifications]: "server",
+  [WS_METHODS.exowattThreadHubGet]: "orchestration",
+  [WS_METHODS.exowattThreadHubSubscribe]: "orchestration",
+  [WS_METHODS.exowattThreadHubUpsert]: "orchestration",
+  [WS_METHODS.exowattThreadHubDelete]: "orchestration",
+  [WS_METHODS.exowattThreadIconsSubscribe]: "orchestration",
 } as const satisfies Readonly<Record<WsRpcMethod, string>>;
 
 const RPC_SPAN_PREFIX = "ws.rpc";

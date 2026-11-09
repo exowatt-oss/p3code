@@ -1,3 +1,4 @@
+import { MessageId } from "./baseSchemas.ts";
 import * as Schema from "effect/Schema";
 import { TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { ThreadId } from "./baseSchemas.ts";
@@ -10,6 +11,7 @@ import { ModelSelection } from "./modelSelection.ts";
 import { ProviderInteractionMode } from "./providerPolicy.ts";
 
 export const ProviderSendTurnInput = Schema.Struct({
+  messageId: Schema.optional(MessageId),
   threadId: ThreadId,
   /** Internal recovery: permits empty turns only for adapters supporting promptless continuation. */
   continuation: Schema.optional(Schema.Boolean),

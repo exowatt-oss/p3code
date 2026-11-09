@@ -45,11 +45,14 @@ const RETRY_MAX_DELAY_MS = 300_000;
 const SESSION_LOSS_RETRY_DELAY_MS = 250;
 // A cold server with a large database can take longer than 15 seconds to
 // answer, and that is not a reason to drop a working connection.
-const CONNECTION_ESTABLISHMENT_TIMEOUT = "15 seconds";
+const CONNECTION_ESTABLISHMENT_TIMEOUT = "30 seconds";
 const establishmentTimeout = Duration.fromInputUnsafe(CONNECTION_ESTABLISHMENT_TIMEOUT);
 const synchronizationTimeout = Duration.fromInputUnsafe("75 seconds");
 const CONNECTION_PROBE_TIMEOUT = "15 seconds";
-const QUICK_CONNECTION_PROBE_TIMEOUT = "3 seconds";
+// exowatt: a probe is one RPC round trip; on a ~1s RTT link with a lost packet
+// a 3s budget tore down healthy sessions. A dead socket is still caught by the
+// silent socket check and the ping.
+const QUICK_CONNECTION_PROBE_TIMEOUT = "8 seconds";
 // After a long suspension pooled connections are often dead too, so the host
 // check can hang with the socket. A replacement is cheaper than the wait.
 const LONG_RESUME_PROBE_TIMEOUT = "1500 millis";

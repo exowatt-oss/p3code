@@ -337,6 +337,26 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodePlatformCrypto.layer))(
       }).pipe(Effect.provide(layerEnvironmentAuth({ mode: "web", host: "192.168.1.50" }))),
     );
 
+    it.effect("accepts a linked environment's session only through the MCP entry point", () =>
+      Effect.gen(function* () {
+        const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;
+        const scopes = ["orchestration:read", "orchestration:operate"] as const;
+        const peer = yield* serverAuth.issueSession({ scopes, label: "p3-peer:Mac (env-mac)" });
+        const agent = yield* serverAuth.issueSession({ scopes, label: "p3-peering notebook" });
+
+        const refused = yield* Effect.flip(
+          serverAuth.authenticateHttpRequest(makeBearerRequest(peer.token)),
+        );
+        expect(refused._tag).toBe("ServerAuthPeerSessionMcpOnlyError");
+        const state = yield* serverAuth.getSessionState(makeBearerRequest(peer.token));
+        expect(state.authenticated).toBe(false);
+        const mcp = yield* serverAuth.authenticateMcpHttpRequest(makeBearerRequest(peer.token));
+        expect(mcp.clientLabel).toBe("p3-peer:Mac (env-mac)");
+        const other = yield* serverAuth.authenticateHttpRequest(makeBearerRequest(agent.token));
+        expect(other.sessionId).toBe(agent.sessionId);
+      }).pipe(Effect.provide(layerEnvironmentAuth({ mode: "web", host: "192.168.1.50" }))),
+    );
+
     it.effect("preserves pairing grants after rejecting scopes they do not grant", () =>
       Effect.gen(function* () {
         const serverAuth = yield* EnvironmentAuth.EnvironmentAuth;

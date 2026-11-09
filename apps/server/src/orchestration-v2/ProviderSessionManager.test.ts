@@ -5,6 +5,9 @@ import { assert, it } from "@effect/vitest";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import {
   EnvironmentId,
+  NodeId,
+  RunId,
+  TurnItemId,
   type ModelSelection,
   type OrchestrationV2AppThread,
   type OrchestrationV2DomainEvent,
@@ -54,6 +57,10 @@ import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as CommandOutputHub from "./CommandOutputHub.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import {
+  makeSubagentChildThread,
+  makeSubagentConversationArtifacts,
+} from "@t3tools/provider-core/server/subagentProjection";
 
 const layerTestDatabase = SqlitePersistence.layerMemory;
 const layerTestStores = Layer.merge(EventStore.layer, ProjectionStore.layer).pipe(
@@ -3624,6 +3631,245 @@ it.effect("ProviderSessionManagerV2 persists session-scoped runtime requests wit
 
     yield* effect.pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 1000 })));
   }),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 persists Phi child completions after the run subscriber closes",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const effect = Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+        const now = yield* DateTime.now;
+        const projectId = yield* idAllocator.allocate.project({
+          fixtureName: "phi-child-completion",
+        });
+        const threadId = yield* idAllocator.allocate.thread({
+          fixtureName: "phi-child-completion",
+          projectId,
+        });
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        const providerThread = makeProviderThread({
+          idAllocator,
+          threadId,
+          providerSessionId,
+          now,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+        });
+        yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+        const runId = RunId.make("original-phi-run");
+        const nodeId = NodeId.make("original-phi-child");
+        const parentNodeId = NodeId.make("original-phi-tool");
+        const subagent = {
+          id: nodeId,
+          threadId,
+          runId,
+          parentNodeId,
+          origin: "provider_native" as const,
+          createdBy: "agent" as const,
+          driver: CODEX_DRIVER,
+          providerInstanceId: modelSelection.instanceId,
+          providerThreadId: providerThread.id,
+          childThreadId: null,
+          nativeTaskRef: {
+            driver: CODEX_DRIVER,
+            nativeId: "subagent:phi-run",
+            strength: "strong" as const,
+          },
+          prompt: "inspect",
+          title: "scout",
+          model: "luna",
+          status: "completed" as const,
+          result: "inspection complete",
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+        };
+        const itemId = TurnItemId.make("original-phi-item");
+        const turnItem = {
+          id: itemId,
+          threadId,
+          runId,
+          nodeId,
+          providerThreadId: providerThread.id,
+          providerTurnId: null,
+          nativeItemRef: subagent.nativeTaskRef,
+          parentItemId: null,
+          ordinal: 1,
+          status: "completed" as const,
+          title: "scout",
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          type: "subagent" as const,
+          subagentId: nodeId,
+          origin: "provider_native" as const,
+          driver: CODEX_DRIVER,
+          providerInstanceId: modelSelection.instanceId,
+          childThreadId: null,
+          prompt: "inspect",
+          result: "inspection complete",
+        };
+        const afterSequence = yield* eventSink.latestSequence({ threadId });
+        const persistedFiber = yield* eventSink.stream({ threadId, afterSequence }).pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "subagent.updated" || stored.event.type === "turn-item.updated",
+          ),
+          Stream.take(2),
+          Stream.runCollect,
+          Effect.forkScoped,
+        );
+        const adapterEvents = (yield* Ref.get(state)).eventQueues.get(String(providerSessionId));
+        assert.isDefined(adapterEvents);
+        yield* Queue.offerAll(adapterEvents!, [
+          { type: "subagent.updated", driver: CODEX_DRIVER, subagent, ingestWithoutRun: true },
+          { type: "turn_item.updated", driver: CODEX_DRIVER, turnItem, ingestWithoutRun: true },
+        ]);
+        yield* Fiber.join(persistedFiber);
+        const projection = yield* projectionStore.getThreadProjection(threadId);
+        assert.equal(
+          projection.subagents.find((agent) => agent.id === nodeId)?.result,
+          "inspection complete",
+        );
+        assert.equal(projection.turnItems.find((item) => item.id === itemId)?.runId, runId);
+      });
+      yield* effect.pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 1000 })));
+    }),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 persists Phi subagent child threads after the run subscriber closes",
+  () =>
+    Effect.gen(function* () {
+      const state = yield* Ref.make(emptyState);
+      const effect = Effect.gen(function* () {
+        const eventSink = yield* EventSink.EventSinkV2;
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+        const now = yield* DateTime.now;
+        const projectId = yield* idAllocator.allocate.project({ fixtureName: "phi-child-thread" });
+        const threadId = yield* idAllocator.allocate.thread({
+          fixtureName: "phi-child-thread",
+          projectId,
+        });
+        const providerSessionId = yield* idAllocator.allocate.providerSession({
+          providerInstanceId: modelSelection.instanceId,
+          threadId,
+        });
+        yield* eventSink.write({
+          events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now, projectId })],
+        });
+        yield* manager.open({ threadId, providerSessionId, modelSelection, runtimePolicy });
+        const parentThread = yield* projectionStore.getThread(threadId);
+        const childThreadId = idAllocator.derive.threadFromProviderThread({
+          driver: CODEX_DRIVER,
+          nativeThreadId: "phi-child",
+        });
+        const childRootNodeId = NodeId.make("phi-child-root");
+        const subagentNodeId = NodeId.make("phi-child-subagent");
+        const answer = makeSubagentConversationArtifacts({
+          messageId: idAllocator.derive.messageFromProviderItem({
+            driver: CODEX_DRIVER,
+            nativeItemId: "phi-child-answer",
+          }),
+          turnItemId: TurnItemId.make("phi-child-answer"),
+          threadId: childThreadId,
+          rootNodeId: childRootNodeId,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          role: "assistant",
+          text: "child answer",
+          ordinal: 2,
+          now,
+        });
+        const persistedFiber = yield* eventSink
+          .stream({
+            threadId: childThreadId,
+            afterSequence: yield* eventSink.latestSequence({ threadId: childThreadId }),
+          })
+          .pipe(
+            Stream.filter((stored) => stored.event.type === "turn-item.updated"),
+            Stream.take(1),
+            Stream.runCollect,
+            Effect.forkScoped,
+          );
+        const adapterEvents = (yield* Ref.get(state)).eventQueues.get(String(providerSessionId));
+        assert.isDefined(adapterEvents);
+        yield* Queue.offerAll(adapterEvents!, [
+          {
+            type: "app_thread.created",
+            driver: CODEX_DRIVER,
+            ingestWithoutRun: true,
+            appThread: makeSubagentChildThread({
+              parentThread,
+              childThreadId,
+              parentNodeId: subagentNodeId,
+              activeProviderThreadId: null,
+              providerInstanceId: modelSelection.instanceId,
+              modelSelection,
+              title: "scout",
+              now,
+              createdBy: "agent",
+              creationSource: "provider",
+            }),
+          },
+          {
+            type: "node.updated",
+            driver: CODEX_DRIVER,
+            ingestWithoutRun: true,
+            node: {
+              id: childRootNodeId,
+              threadId: childThreadId,
+              runId: null,
+              parentNodeId: null,
+              rootNodeId: childRootNodeId,
+              kind: "root_turn",
+              status: "completed",
+              countsForRun: false,
+              providerThreadId: null,
+              providerTurnId: null,
+              nativeItemRef: null,
+              runtimeRequestId: null,
+              checkpointScopeId: null,
+              startedAt: now,
+              completedAt: now,
+            },
+          },
+          {
+            type: "message.updated",
+            driver: CODEX_DRIVER,
+            ingestWithoutRun: true,
+            message: answer.message,
+          },
+          {
+            type: "turn_item.updated",
+            driver: CODEX_DRIVER,
+            ingestWithoutRun: true,
+            turnItem: answer.turnItem,
+          },
+        ]);
+        yield* Fiber.join(persistedFiber);
+        const child = yield* projectionStore.getThreadProjection(childThreadId);
+        assert.equal(child.thread.lineage.parentThreadId, threadId);
+        assert.equal(child.thread.lineage.relationshipToParent, "subagent");
+        assert.deepEqual(
+          child.messages.map((message) => message.text),
+          ["child answer"],
+        );
+      });
+      yield* effect.pipe(Effect.provide(layerTest({ state, idleTimeoutMs: 1000 })));
+    }),
 );
 
 it.effect(

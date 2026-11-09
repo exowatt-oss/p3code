@@ -276,13 +276,22 @@ function sessionScopedRuntimeRequestThreadId(
   switch (event.type) {
     case "runtime_request.updated":
       return event.runtimeRequest.providerTurnId === null ? event.threadId : undefined;
+    case "app_thread.created":
+      return event.ingestWithoutRun === true ? event.appThread.id : undefined;
     case "node.updated":
-      return event.node.runId === null && event.node.runtimeRequestId !== null
+      return event.ingestWithoutRun === true ||
+        (event.node.runId === null && event.node.runtimeRequestId !== null)
         ? event.node.threadId
         : undefined;
+    case "message.updated":
+      return event.ingestWithoutRun === true ? event.message.threadId : undefined;
+    case "subagent.updated":
+      return event.ingestWithoutRun === true ? event.subagent.threadId : undefined;
     case "turn_item.updated":
-      return event.turnItem.runId === null &&
-        (event.turnItem.type === "approval_request" || event.turnItem.type === "user_input_request")
+      return event.ingestWithoutRun === true ||
+        (event.turnItem.runId === null &&
+          (event.turnItem.type === "approval_request" ||
+            event.turnItem.type === "user_input_request"))
         ? event.turnItem.threadId
         : undefined;
     default:
@@ -1887,6 +1896,19 @@ export const layerWithOptions = (
                 ),
               ),
             ),
+          ...(runtime.setModelSelection === undefined
+            ? {}
+            : {
+                // exowatt: a live picker change is turn activity like a steer; the
+                // running turn already keeps the session busy.
+                setModelSelection: (selection: ModelSelection) =>
+                  observeActivity(providerSessionId, touchActivity(providerSessionId)).pipe(
+                    Effect.andThen(runtime.setModelSelection!(selection)),
+                    Effect.ensuring(
+                      observeActivity(providerSessionId, touchActivity(providerSessionId)),
+                    ),
+                  ),
+              }),
           steerTurn: (input) =>
             observeActivity(providerSessionId, touchActivity(providerSessionId)).pipe(
               Effect.andThen(runtime.steerTurn(input).pipe(turnMetrics("steer"))),
@@ -2022,10 +2044,10 @@ export const layerWithOptions = (
                       });
                     });
                   }
-                  // Some providers can block before a run subscriber exists
-                  // (project trust, login, or session-switch hooks). Persist
-                  // their runless request artifacts directly so the normal T3
-                  // request UI can answer them and unblock session setup.
+                  // Requests without a run subscriber, and provider-native
+                  // background updates after their original run closed, go
+                  // directly to ingestion instead of being dropped by the
+                  // now-empty (or unrelated) run subscription.
                   const threadId = sessionScopedRuntimeRequestThreadId(event);
                   if (threadId !== undefined) {
                     yield* Effect.gen(function* () {

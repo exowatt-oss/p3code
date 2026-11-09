@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "docs": {
+      "command": "npx",
+      "args": ["-y", "@example/docs"],
+      "env": {
+        "DOCS_TOKEN": "${DOCS_TOKEN}"
+      }
+    }
+  },
+  "imports": ["cursor"]
+}

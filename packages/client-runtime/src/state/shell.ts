@@ -391,8 +391,13 @@ export const makeEnvironmentShellState = Effect.fn("EnvironmentShellState.make")
         const { omitIdleSubagents, omitOlderSettled, omissionKey } =
           yield* session.initialConfig.pipe(
             Effect.map((config) => {
-              const omitIdleSubagents = config.shellThreadFamilies === true;
-              const omitOlderSettled = config.shellOlderSettled === true && omitIdleSubagents;
+              // exowatt: P3 nests finished subagents under their parent row ("+N", child
+              // list) and the Hub lists them, so the shell keeps idle children. Older
+              // settled threads are still trimmed (upstream derives that from
+              // omitIdleSubagents, which would turn it off too).
+              const omitIdleSubagents = false;
+              const omitOlderSettled =
+                config.shellOlderSettled === true && config.shellThreadFamilies === true;
               // Migrations rewrite projections without events, so an upgraded server reloads.
               const { serverVersion, databaseMigration } = config.environment;
               return {

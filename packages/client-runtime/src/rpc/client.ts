@@ -67,6 +67,12 @@ export type EnvironmentSubscriptionRpcTag =
   | typeof WS_METHODS.subscribeDeviceState
   | typeof WS_METHODS.subscribeResourceTelemetry
   | typeof WS_METHODS.pullRequestsSubscribeRefreshes
+  | typeof WS_METHODS.exowattFeadsStatus
+  | typeof WS_METHODS.exowattFeadsAgentwatch
+  | typeof WS_METHODS.exowattFeadsMyIssues
+  | typeof WS_METHODS.exowattFeadsInbox
+  | typeof WS_METHODS.exowattThreadHubSubscribe // exowatt
+  | typeof WS_METHODS.exowattThreadIconsSubscribe // exowatt
   | typeof WS_METHODS.subscribeVcsStatus
   | typeof WS_METHODS.subscribeWorktreeSetup
   | typeof WS_METHODS.subscribeProjectClones

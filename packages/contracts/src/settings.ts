@@ -78,6 +78,61 @@ export const SidebarThreadSortOrder = Schema.Literals(["updated_at", "created_at
 export type SidebarThreadSortOrder = typeof SidebarThreadSortOrder.Type;
 const DEFAULT_SIDEBAR_THREAD_SORT_ORDER: SidebarThreadSortOrder = "updated_at";
 
+// exowatt: "manual" is upstream's drag order (activeOrderKey) on v2; the
+// other modes ignore order keys. "activity" stays the P3 default.
+export const ExowattSidebarThreadSortMode = Schema.Literals([
+  "activity",
+  "created_at",
+  "name",
+  "status",
+  "manual",
+]);
+export type ExowattSidebarThreadSortMode = typeof ExowattSidebarThreadSortMode.Type;
+export const DEFAULT_EXOWATT_SIDEBAR_THREAD_SORT_MODE: ExowattSidebarThreadSortMode = "activity";
+
+export const ExowattSidebarThreadFilter = Schema.Literals([
+  "all",
+  "running",
+  "needs-attention",
+  "pinned",
+]);
+export type ExowattSidebarThreadFilter = typeof ExowattSidebarThreadFilter.Type;
+export const DEFAULT_EXOWATT_SIDEBAR_THREAD_FILTER: ExowattSidebarThreadFilter = "all";
+
+// Sidebar filter control (next to the sort control): a single-choice activity
+// window plus three independent toggles. "all" keeps every thread, matching the
+// pre-filter sidebar.
+export const ExowattSidebarFilterWindow = Schema.Literals(["all", "24h", "48h", "7d"]);
+export type ExowattSidebarFilterWindow = typeof ExowattSidebarFilterWindow.Type;
+export const DEFAULT_EXOWATT_SIDEBAR_FILTER_WINDOW: ExowattSidebarFilterWindow = "all";
+
+// "default" keeps upstream's colours (no P3 accent) and is the default; older saved accents
+// still decode.
+export const ExowattAccent = Schema.Literals(["default", "sunrise", "amber", "ocean", "orchid"]);
+export type ExowattAccent = typeof ExowattAccent.Type;
+export const DEFAULT_EXOWATT_ACCENT: ExowattAccent = "default";
+
+export const ExowattStatusLightBlink = Schema.Literals(["off", "subtle", "standard", "strong"]);
+export type ExowattStatusLightBlink = typeof ExowattStatusLightBlink.Type;
+export const DEFAULT_EXOWATT_STATUS_LIGHT_BLINK: ExowattStatusLightBlink = "standard";
+
+export const ExowattSidebarDensity = Schema.Literals(["comfortable", "compact"]);
+export type ExowattSidebarDensity = typeof ExowattSidebarDensity.Type;
+// Compact is the P3 default: single-line thread rows in the default sidebar.
+export const DEFAULT_EXOWATT_SIDEBAR_DENSITY: ExowattSidebarDensity = "compact";
+
+// Order of the per-project sections when the default sidebar groups by
+// project. Separate from upstream's `sidebarProjectSortOrder` (which the
+// command palette and legacy tree still use) because it adds "name".
+export const ExowattSidebarProjectSort = Schema.Literals([
+  "activity",
+  "created_at",
+  "name",
+  "manual",
+]);
+export type ExowattSidebarProjectSort = typeof ExowattSidebarProjectSort.Type;
+export const DEFAULT_EXOWATT_SIDEBAR_PROJECT_SORT: ExowattSidebarProjectSort = "activity";
+
 export const SidebarProjectGroupingMode = Schema.Literals([
   "repository",
   "repository_path",
@@ -335,6 +390,9 @@ export const LoadBalancingWeights = Schema.Record(
 );
 
 export const DiffColorScheme = Schema.Literals(["red-green", "blue-orange"]);
+export const RemoteHealthCheckTimeoutSeconds = Schema.Literals([1, 2, 5, 10, 30]);
+export type RemoteHealthCheckTimeoutSeconds = typeof RemoteHealthCheckTimeoutSeconds.Type;
+export const DEFAULT_REMOTE_HEALTH_CHECK_TIMEOUT_SECONDS: RemoteHealthCheckTimeoutSeconds = 5;
 
 export const ChatWidth = Schema.Literals(["comfortable", "wide", "full"]);
 export type ChatWidth = typeof ChatWidth.Type;
@@ -386,7 +444,7 @@ export const VoiceTranscriptionDestination = Schema.Union([
 ]);
 export type VoiceTranscriptionDestination = typeof VoiceTranscriptionDestination.Type;
 
-export const ClientSettingsSchema = Schema.Struct({
+export const ClientSettingsFields = Schema.Struct({
   notificationMode: NotificationMode.pipe(
     Schema.withDecodingDefault(Effect.succeed("off" as const)),
   ),
@@ -398,6 +456,9 @@ export const ClientSettingsSchema = Schema.Struct({
   effortDisplay: EffortDisplay.pipe(Schema.withDecodingDefault(Effect.succeed("label" as const))),
   loadBalancingEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   loadBalancingWeights: LoadBalancingWeights.pipe(Schema.withDecodingDefault(Effect.succeed({}))),
+  remoteHealthCheckTimeoutSeconds: RemoteHealthCheckTimeoutSeconds.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_REMOTE_HEALTH_CHECK_TIMEOUT_SECONDS)),
+  ),
   appearanceContrast: AppearanceContrast.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_APPEARANCE_CONTRAST)),
   ),
@@ -460,6 +521,24 @@ export const ClientSettingsSchema = Schema.Struct({
   diffLayout: DiffLayout.pipe(Schema.withDecodingDefault(Effect.succeed(DEFAULT_DIFF_LAYOUT))),
   environmentIdentificationMode: EnvironmentIdentificationMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_ENVIRONMENT_IDENTIFICATION_MODE)),
+  ),
+  "exowatt.accent": ExowattAccent.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_EXOWATT_ACCENT)),
+  ),
+  // Retired with the new-thread clouds; kept so older synced settings still decode.
+  "exowatt.newThreadSunrise": Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  "exowatt.sidebarDensity": ExowattSidebarDensity.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_EXOWATT_SIDEBAR_DENSITY)),
+  ),
+  "exowatt.sidebarSort": ExowattSidebarThreadSortMode.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_EXOWATT_SIDEBAR_THREAD_SORT_MODE)),
+  ),
+  // exowatt: flips the chosen sort (oldest first, Z to A, idle first). Manual ignores it.
+  "exowatt.sidebarSortReversed": Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  "exowatt.statusLightBlink": ExowattStatusLightBlink.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_EXOWATT_STATUS_LIGHT_BLINK)),
   ),
   glassOpacity: GlassOpacity.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_GLASS_OPACITY)),
@@ -529,7 +608,11 @@ export const ClientSettingsSchema = Schema.Struct({
   // Opt-in for the removed legacy sidebar. Still read so those users land in
   // the boring sidebar; the boring sidebar toggle clears it.
   legacySidebarEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
-  sidebarWorkingShelfEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  // exowatt: off by default. Upstream turned the Working shelf on (3de45c6254), which routes
+  // the flat list through its inbox order and bypasses P3's saved sort.
+  sidebarWorkingShelfEnabled: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
   sidebarProjectGroupingMode: SidebarProjectGroupingMode.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_PROJECT_GROUPING_MODE)),
   ),
@@ -542,6 +625,40 @@ export const ClientSettingsSchema = Schema.Struct({
   ),
   sidebarThreadSortOrder: SidebarThreadSortOrder.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_SIDEBAR_THREAD_SORT_ORDER)),
+  ),
+  // P3 default-sidebar layout: section the stream by project. Off keeps
+  // upstream's flat stream; the legacy-sidebar migration below turns it on for
+  // users whose layout was project-grouped.
+  "exowatt.sidebarGroupByProject": Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  "exowatt.workspaceStateCallouts": Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(true)),
+  ),
+  // Phi's MCP connection notices ("✓ MCP connected — …") in the chat timeline.
+  "exowatt.phiMcpNotices": Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  "exowatt.sidebarNestDispatched": Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  // P3 sidebar filter control. Defaults are "show everything", so a fresh
+  // client renders exactly the unfiltered sidebar.
+  "exowatt.sidebarFilterWindow": ExowattSidebarFilterWindow.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_EXOWATT_SIDEBAR_FILTER_WINDOW)),
+  ),
+  "exowatt.sidebarFilterThisDevice": Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  "exowatt.sidebarFilterNeedsMe": Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  "exowatt.sidebarFilterHideSettled": Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  "exowatt.sidebarProjectSort": ExowattSidebarProjectSort.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_EXOWATT_SIDEBAR_PROJECT_SORT)),
+  ),
+  exowattSidebarThreadFilter: ExowattSidebarThreadFilter.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_EXOWATT_SIDEBAR_THREAD_FILTER)),
   ),
   timestampFormat: TimestampFormat.pipe(
     Schema.withDecodingDefault(Effect.succeed(DEFAULT_TIMESTAMP_FORMAT)),
@@ -578,9 +695,198 @@ export const ClientSettingsSchema = Schema.Struct({
   // KaTeX out of the render path entirely.
   mathRenderingEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
 });
+
+// `exowatt.sidebarSort` (Customize page) and the sidebar header briefly wrote
+// two keys for the same preference, and the header's group-by toggle likewise
+// predates its `exowatt.*` key. The old keys are gone; a persisted value under
+// either is carried over once, on read, unless the surviving key is set.
+const LEGACY_EXOWATT_SIDEBAR_SORT_KEY = "exowattSidebarThreadSortMode";
+const LEGACY_EXOWATT_SIDEBAR_GROUP_KEY = "exowattSidebarThreadGroupByProject";
+export function migrateLegacyClientSettingsInput(input: unknown): unknown {
+  if (typeof input !== "object" || input === null) {
+    return input;
+  }
+  const {
+    [LEGACY_EXOWATT_SIDEBAR_SORT_KEY]: legacySort,
+    [LEGACY_EXOWATT_SIDEBAR_GROUP_KEY]: legacyGroup,
+    ...rest
+  } = input as Record<string, unknown>;
+  if (LEGACY_EXOWATT_SIDEBAR_SORT_KEY in input && !("exowatt.sidebarSort" in rest)) {
+    rest["exowatt.sidebarSort"] = legacySort;
+  }
+  if (LEGACY_EXOWATT_SIDEBAR_GROUP_KEY in input && !("exowatt.sidebarGroupByProject" in rest)) {
+    rest["exowatt.sidebarGroupByProject"] = legacyGroup;
+  }
+  // P3 retired the legacy per-project sidebar: a persisted opt-in flips off
+  // unconditionally so nobody lands on it again. That layout was grouped by
+  // project, so the default sidebar starts grouped for those users unless they
+  // already chose a grouping for it.
+  if (rest.legacySidebarEnabled === true) {
+    rest.legacySidebarEnabled = false;
+    if (!("exowatt.sidebarGroupByProject" in rest)) {
+      rest["exowatt.sidebarGroupByProject"] = true;
+    }
+  }
+  return rest;
+}
+// Accepts any persisted input at runtime (retired keys included), but is typed
+// as the fields' encoded shape so `Schema.encodeSync(ClientSettingsSchema)`
+// keeps returning a typed object instead of `unknown`.
+const ClientSettingsPersistedInput = Schema.Unknown as unknown as Schema.Codec<
+  typeof ClientSettingsFields.Encoded
+>;
+export const ClientSettingsSchema = ClientSettingsPersistedInput.pipe(
+  Schema.decodeTo(
+    ClientSettingsFields,
+    SchemaTransformation.transform({
+      decode: (input) =>
+        migrateLegacyClientSettingsInput(input) as typeof ClientSettingsFields.Encoded,
+      encode: (settings) => settings,
+    }),
+  ),
+);
 export type ClientSettings = typeof ClientSettingsSchema.Type;
 
 export const DEFAULT_CLIENT_SETTINGS: ClientSettings = Schema.decodeSync(ClientSettingsSchema)({});
+
+// ── Client Settings Patch ───────────────────────────────────────
+
+export const ClientSettingsPatch = Schema.Struct({
+  notificationMode: Schema.optionalKey(NotificationMode),
+  inAppNotificationsEnabled: Schema.optionalKey(Schema.Boolean),
+  diffColorScheme: Schema.optionalKey(DiffColorScheme),
+  chatWidth: Schema.optionalKey(ChatWidth),
+  effortDisplay: Schema.optionalKey(EffortDisplay),
+  loadBalancingEnabled: Schema.optionalKey(Schema.Boolean),
+  loadBalancingWeights: Schema.optionalKey(LoadBalancingWeights),
+  remoteHealthCheckTimeoutSeconds: Schema.optionalKey(RemoteHealthCheckTimeoutSeconds),
+  appearanceContrast: Schema.optionalKey(AppearanceContrast),
+  panelAnimationDurationMs: Schema.optionalKey(PanelAnimationDurationMs),
+  browserDefaultViewport: Schema.optionalKey(PreviewViewportSetting),
+  browserDefaultZoomFactor: Schema.optionalKey(PreviewZoomFactor),
+  browserDefaultAppearance: Schema.optionalKey(PreviewAppearancePreference),
+  browserRecordingFrameRate: Schema.optionalKey(BrowserRecordingFrameRate),
+  browserRecordingShowKeyPresses: Schema.optionalKey(Schema.Boolean),
+  browserRecordingShowMousePresses: Schema.optionalKey(Schema.Boolean),
+  browserLinkTarget: Schema.optionalKey(BrowserLinkTarget),
+  browserSearchEngine: Schema.optionalKey(BrowserSearchEngine),
+  browserCustomSearchUrl: Schema.optionalKey(BrowserCustomSearchUrl),
+  browserAutoShowFloatingPreview: Schema.optionalKey(Schema.Boolean),
+  browserProfiles: Schema.optionalKey(Schema.Array(BrowserProfile)),
+  browserDefaultProfileId: Schema.optionalKey(BrowserProfileId),
+  confirmQuit: Schema.optionalKey(QuitConfirmationMode),
+  confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
+  confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
+  confirmThreadUnpin: Schema.optionalKey(Schema.Boolean),
+  diffFilesCollapsed: Schema.optionalKey(Schema.Boolean),
+  diffIgnoreWhitespace: Schema.optionalKey(Schema.Boolean),
+  diffLayout: Schema.optionalKey(DiffLayout),
+  environmentIdentificationMode: Schema.optionalKey(EnvironmentIdentificationMode),
+  "exowatt.accent": Schema.optionalKey(ExowattAccent),
+  "exowatt.newThreadSunrise": Schema.optionalKey(Schema.Boolean),
+  "exowatt.sidebarDensity": Schema.optionalKey(ExowattSidebarDensity),
+  "exowatt.sidebarSort": Schema.optionalKey(ExowattSidebarThreadSortMode),
+  "exowatt.sidebarSortReversed": Schema.optionalKey(Schema.Boolean),
+  "exowatt.statusLightBlink": Schema.optionalKey(ExowattStatusLightBlink),
+  glassOpacity: Schema.optionalKey(GlassOpacity),
+  onboardingCompletedAt: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  fontSizeInterface: Schema.optionalKey(InterfaceFontSize),
+  fontSizePrompt: Schema.optionalKey(PromptFontSize),
+  fontSizeCode: Schema.optionalKey(CodeFontSize),
+  fontSizeTerminal: Schema.optionalKey(TerminalFontSize),
+  fontFamilyCode: Schema.optionalKey(FontFamilyPreference),
+  fontFamilyComposer: Schema.optionalKey(FontFamilyPreference),
+  fontFamilySans: Schema.optionalKey(FontFamilyPreference),
+  fontFamilyTerminal: Schema.optionalKey(FontFamilyPreference),
+  fontSmoothing: Schema.optionalKey(Schema.Boolean),
+  persistComposerContextStrip: Schema.optionalKey(Schema.Boolean),
+  favorites: Schema.optionalKey(ModelFavorites),
+  providerModelPreferences: Schema.optionalKey(ProviderModelPreferences),
+  pullRequestMergeMethodOverrides: Schema.optionalKey(
+    Schema.Record(TrimmedNonEmptyString, PullRequestMergeMethod),
+  ),
+  pullRequestLinksOpenInApp: Schema.optionalKey(Schema.Boolean),
+  planModeEnabled: Schema.optionalKey(Schema.Boolean),
+  contextWindowMeterEnabled: Schema.optionalKey(Schema.Boolean),
+  composerRichTextEnabled: Schema.optionalKey(Schema.Boolean),
+  sendShortcut: Schema.optionalKey(Schema.Literals(["enter", "mod-enter-multiline", "mod-enter"])),
+  followUpBehavior: Schema.optionalKey(Schema.Literals(["queue", "steer"])),
+  proactivePanelsEnabled: Schema.optionalKey(Schema.Boolean),
+  showSkillsInSlashMenu: Schema.optionalKey(Schema.Boolean),
+  boringSidebarEnabled: Schema.optionalKey(Schema.Boolean),
+  boringSidebarMultilineRows: Schema.optionalKey(Schema.Boolean),
+  toolCallVisibility: Schema.optionalKey(ToolCallVisibility),
+  threadDetailsUsageEnabled: Schema.optionalKey(Schema.Boolean),
+  threadDetailsItems: Schema.optionalKey(Schema.Record(Schema.String, Schema.Boolean)),
+  legacySidebarEnabled: Schema.optionalKey(Schema.Boolean),
+  sidebarWorkingShelfEnabled: Schema.optionalKey(Schema.Boolean),
+  sidebarProjectGroupingMode: Schema.optionalKey(SidebarProjectGroupingMode),
+  sidebarProjectGroupingOverrides: Schema.optionalKey(
+    Schema.Record(TrimmedNonEmptyString, SidebarProjectGroupingMode),
+  ),
+  sidebarProjectSortOrder: Schema.optionalKey(SidebarProjectSortOrder),
+  sidebarThreadSortOrder: Schema.optionalKey(SidebarThreadSortOrder),
+  "exowatt.sidebarGroupByProject": Schema.optionalKey(Schema.Boolean),
+  "exowatt.workspaceStateCallouts": Schema.optionalKey(Schema.Boolean),
+  "exowatt.phiMcpNotices": Schema.optionalKey(Schema.Boolean),
+  "exowatt.sidebarNestDispatched": Schema.optionalKey(Schema.Boolean),
+  "exowatt.sidebarFilterWindow": Schema.optionalKey(ExowattSidebarFilterWindow),
+  "exowatt.sidebarFilterThisDevice": Schema.optionalKey(Schema.Boolean),
+  "exowatt.sidebarFilterNeedsMe": Schema.optionalKey(Schema.Boolean),
+  "exowatt.sidebarFilterHideSettled": Schema.optionalKey(Schema.Boolean),
+  "exowatt.sidebarProjectSort": Schema.optionalKey(ExowattSidebarProjectSort),
+  exowattSidebarThreadFilter: Schema.optionalKey(ExowattSidebarThreadFilter),
+  timestampFormat: Schema.optionalKey(TimestampFormat),
+  voiceMicrophone: Schema.optionalKey(Schema.String),
+  voiceShortcutMode: Schema.optionalKey(VoiceShortcutMode),
+  speechLanguage: Schema.optionalKey(SpeechLanguage),
+  speechTranslateToEnglish: Schema.optionalKey(Schema.Boolean),
+  speechCustomWords: Schema.optionalKey(SpeechCustomWords),
+  speechSilenceFiltering: Schema.optionalKey(Schema.Boolean),
+  speechRemoveFillerWords: Schema.optionalKey(Schema.Boolean),
+  speechPostProcessingPrompt: Schema.optionalKey(SpeechPostProcessingPromptSettings),
+  speechCorrectionWord: Schema.optionalKey(SpeechCorrectionCue),
+  snapShotEnabled: Schema.optionalKey(Schema.Boolean),
+  snapShotIncludeAccessibility: Schema.optionalKey(Schema.Boolean),
+  snapShotShortcut: Schema.optionalKey(SnapShotShortcut),
+  snapShotPlaySound: Schema.optionalKey(Schema.Boolean),
+  snapShotSound: Schema.optionalKey(SnapShotSound),
+  snapShotFlash: Schema.optionalKey(Schema.Boolean),
+  snapShotAnimations: Schema.optionalKey(Schema.Boolean),
+  wordWrap: Schema.optionalKey(Schema.Boolean),
+  mathRenderingEnabled: Schema.optionalKey(Schema.Boolean),
+});
+export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;
+
+/**
+ * Exowatt: a client-settings patch every client applies once per `setAt` generation (like
+ * `defaultTheme`), so MCP agents can set client-local preferences. A later user change sticks
+ * until the next push. Empty `setAt` means nothing pushed.
+ */
+export const ExowattClientSettingsPush = Schema.Struct({
+  patch: ClientSettingsPatch,
+  setAt: Schema.String.check(Schema.isMaxLength(64)),
+});
+export type ExowattClientSettingsPush = typeof ExowattClientSettingsPush.Type;
+export const EMPTY_EXOWATT_CLIENT_SETTINGS_PUSH: ExowattClientSettingsPush = {
+  patch: {},
+  setAt: "",
+};
+
+/**
+ * Exowatt: the thread every client is asked to show (MCP `thread_focus`), acted on once per
+ * `requestedAt` generation like `exowattClientSettingsPush`; a stale request is ignored.
+ * Empty `requestedAt` means nothing requested.
+ */
+export const ExowattThreadFocusRequest = Schema.Struct({
+  threadId: Schema.String.check(Schema.isMaxLength(128)),
+  requestedAt: Schema.String.check(Schema.isMaxLength(64)),
+});
+export type ExowattThreadFocusRequest = typeof ExowattThreadFocusRequest.Type;
+export const EMPTY_EXOWATT_THREAD_FOCUS_REQUEST: ExowattThreadFocusRequest = {
+  threadId: "",
+  requestedAt: "",
+};
 
 const UsageModelTokenPrice = Schema.Number.check(
   Schema.isFinite(),
@@ -842,6 +1148,43 @@ export const AntigravityAuthMethod = Schema.Literals(
 );
 export type AntigravityAuthMethod = typeof AntigravityAuthMethod.Type;
 
+export const PhiSettings = makeProviderSettingsSchema(
+  {
+    // Phi is P3 Code's default harness. Keep native extension, skill, context,
+    // auth, model, and session discovery enabled unless the user opts out via
+    // Phi's own configuration.
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(true)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+    binaryPath: makeBinaryPathSetting("phi").pipe(
+      Schema.annotateKey({
+        title: "Binary path",
+        description: "Path to the Phi coding-agent binary.",
+        providerSettingsForm: { placeholder: "phi", clearWhenEmpty: "omit" },
+      }),
+    ),
+    launchArgs: TrimmedString.pipe(
+      Schema.withDecodingDefault(Effect.succeed("")),
+      Schema.annotateKey({
+        title: "Launch arguments",
+        description:
+          "Optional Phi arguments. P3 Code always controls RPC mode, session identity, and approval enforcement.",
+        providerSettingsForm: { placeholder: "--thinking high", clearWhenEmpty: "omit" },
+      }),
+    ),
+    // exowatt: same shape as PiSettings so the Pi adapter/provider stack accepts it.
+    customModels: Schema.Array(CustomModelSetting).pipe(
+      Schema.withDecodingDefault(Effect.succeed([])),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+  },
+  {
+    order: ["binaryPath", "launchArgs"],
+  },
+);
+export type PhiSettings = typeof PhiSettings.Type;
+
 export const AntigravitySettings = makeProviderSettingsSchema(
   {
     enabled: Schema.Boolean.pipe(
@@ -1039,7 +1382,8 @@ export const BackgroundActivitySettings = Schema.Struct({
 }).pipe(Schema.withDecodingDefault(Effect.succeed({})));
 export type BackgroundActivitySettings = typeof BackgroundActivitySettings.Type;
 
-export const ResponseStreamingMode = Schema.Literals(["turn", "paragraph"]);
+// exowatt: "token" streams every delta live (P3 default; see ServerSettings.responseStreamingMode).
+export const ResponseStreamingMode = Schema.Literals(["turn", "paragraph", "token"]);
 export type ResponseStreamingMode = typeof ResponseStreamingMode.Type;
 
 const StorageRetentionDays = Schema.NullOr(
@@ -1238,6 +1582,15 @@ export const StorageCleanupSettings = Schema.Struct({
 });
 export type StorageCleanupSettings = typeof StorageCleanupSettings.Type;
 
+/** Exowatt: the receiver-owned gate and runtime-mode ceiling for linked (`p3-peer:`) sessions. */
+export const ExowattPeerInbound = Schema.Literals([
+  "off",
+  "approval-required",
+  "auto-accept-edits",
+  "full-access",
+]);
+export type ExowattPeerInbound = typeof ExowattPeerInbound.Type;
+
 const CloudSpeechCredential = SettingsSecretValue.pipe(
   Schema.withDecodingDefault(Effect.succeed("")),
 );
@@ -1263,8 +1616,11 @@ export const ServerSettings = Schema.Struct({
   previousWorktreesDirectories: Schema.Array(TrimmedString).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
   ),
+  // A fresh key (was `enableLegacyTokenStreaming`, `enableAssistantStreaming`); decoding drops
+  // the old one. exowatt: stream-default. Upstream defaults to `paragraph`; P3 Code streams
+  // every token live.
   responseStreamingMode: ResponseStreamingMode.pipe(
-    Schema.withDecodingDefault(Effect.succeed("paragraph" as const)),
+    Schema.withDecodingDefault(Effect.succeed("token" as const)),
   ),
   enableProviderUpdateChecks: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   continueThreadsAfterServerUpdate: Schema.Boolean.pipe(
@@ -1288,6 +1644,9 @@ export const ServerSettings = Schema.Struct({
   speechPostProcessingModelSelection: Schema.NullOr(ModelSelection).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
+  enableAgentThreadTools: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /** Whether every in-app agent session receives the full P3 MCP surface. */
+  enableAgentP3Tools: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
   projectAgentBrowserAccessOverrides: Schema.Record(ProjectId, Schema.Boolean).pipe(
     Schema.withDecodingDefault(Effect.succeed({})),
   ),
@@ -1460,6 +1819,40 @@ export const ServerSettings = Schema.Struct({
 
   /** Sent by the Usage tab with each summary request to this environment; edit in settings.json. Invalid values are ignored. */
   usageModelFilter: ForwardCompatibleOptional(UsageModelFilter),
+  exowattClientSettingsPush: ExowattClientSettingsPush.pipe(
+    Schema.withDecodingDefault(Effect.succeed(EMPTY_EXOWATT_CLIENT_SETTINGS_PUSH)),
+  ),
+  exowattThreadFocusRequest: ExowattThreadFocusRequest.pipe(
+    Schema.withDecodingDefault(Effect.succeed(EMPTY_EXOWATT_THREAD_FOCUS_REQUEST)),
+  ),
+  /**
+   * Exowatt: keep a `p3` MCP entry with a fresh agent token in each local harness config
+   * (startup and every 12 h). Off leaves Customize › MCP "Add to" and `connector_add`.
+   * Server-authoritative: the server owns the harness configs and mints the tokens.
+   */
+  exowattAutoConnectHarnesses: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  /**
+   * Experimental: agents on this environment get the thread-signal MCP tools
+   * (`t3_signal_emit`, `t3_thread_signals`, `t3_signal_ack`) an orchestrator
+   * thread reads its workers through. Off hides and refuses them.
+   */
+  exowattThreadSignals: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  /**
+   * Exowatt: agents on this environment reach the threads of the user's other linked P3
+   * environments through the Threads MCP tools (`environmentId`). The desktop app links
+   * them; off makes the server drop every stored link and refuse new ones.
+   */
+  exowattCrossEnvironmentAgentTools: Schema.Boolean.pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
+  /**
+   * Exowatt: what agents on the user's *other* environments may do on this server through a
+   * linked (`p3-peer:`) session. Off refuses those sessions at `/mcp` and revokes them; any
+   * other value is the highest runtime mode a peer may start or message a thread at.
+   */
+  exowattPeerInbound: ExowattPeerInbound.pipe(Schema.withDecodingDefault(Effect.succeed("off"))),
 });
 export type ServerSettings = typeof ServerSettings.Type;
 
@@ -1480,8 +1873,10 @@ const DEFAULT_DISABLED_PROVIDER_DRIVERS: ReadonlySet<ProviderDriverKind> = new S
   ),
 );
 
+// Phi is discoverable by default, like Codex and Claude; users choose a provider per thread.
+// Enabling the slot does not install or launch Phi.
 const DEFAULT_ENABLED_DEFAULT_INSTANCES: ReadonlySet<ProviderInstanceId> = new Set(
-  ["codex", "claudeAgent"].map((instanceId) => ProviderInstanceId.make(instanceId)),
+  ["codex", "claudeAgent", "phi"].map((instanceId) => ProviderInstanceId.make(instanceId)),
 );
 
 export const isUnconfiguredDefaultInstanceEnabled = (instanceId: ProviderInstanceId): boolean =>
@@ -1703,6 +2098,7 @@ export const ServerSettingsPatch = Schema.Struct({
   speechModelUnloadTimeout: Schema.optionalKey(SpeechModelUnloadTimeout),
   speechProjectCustomWords: Schema.optionalKey(SpeechCustomWords),
   speechPostProcessingModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
+  enableAgentThreadTools: Schema.optionalKey(Schema.Boolean),
   projectAgentBrowserAccessOverrides: Schema.optionalKey(
     Schema.Record(ProjectId, Schema.NullOr(Schema.Boolean)),
   ),
@@ -1738,6 +2134,7 @@ export const ServerSettingsPatch = Schema.Struct({
   easDeviceHosts: Schema.optionalKey(EasDeviceHostConfigs),
   simlockDeviceHosts: Schema.optionalKey(SimlockDeviceHostConfigs),
   simlockDeviceHostsEnabled: Schema.optionalKey(Schema.Boolean),
+  enableAgentP3Tools: Schema.optionalKey(Schema.Boolean),
   sidebarAutoSettleAfterDays: Schema.optionalKey(Schema.NullOr(SidebarAutoSettleAfterDays)),
   compactIdleThreads: Schema.optionalKey(LegacyCompactIdleThreads),
   idleCompaction: Schema.optionalKey(IdleCompactionMode),
@@ -1811,6 +2208,14 @@ export const ServerSettingsPatch = Schema.Struct({
   usageModelAliases: Schema.optionalKey(
     Schema.Record(TrimmedNonEmptyString, Schema.NullOr(TrimmedNonEmptyString)),
   ),
+  // Whole-value replacement, like `providerInstances`: a new push supersedes the
+  // previous one rather than merging its keys into it.
+  exowattClientSettingsPush: Schema.optionalKey(ExowattClientSettingsPush),
+  exowattThreadFocusRequest: Schema.optionalKey(ExowattThreadFocusRequest),
+  exowattAutoConnectHarnesses: Schema.optionalKey(Schema.Boolean),
+  exowattThreadSignals: Schema.optionalKey(Schema.Boolean),
+  exowattCrossEnvironmentAgentTools: Schema.optionalKey(Schema.Boolean),
+  exowattPeerInbound: Schema.optionalKey(ExowattPeerInbound),
 });
 export type ServerSettingsPatch = typeof ServerSettingsPatch.Type;
 
@@ -1854,93 +2259,3 @@ export function requiredScopesForProjectMutation(
     ...requiredScopesForServerSettingsPatch({ defaultProjectScripts: mutation.scripts }),
   ];
 }
-
-export const ClientSettingsPatch = Schema.Struct({
-  notificationMode: Schema.optionalKey(NotificationMode),
-  inAppNotificationsEnabled: Schema.optionalKey(Schema.Boolean),
-  diffColorScheme: Schema.optionalKey(DiffColorScheme),
-  chatWidth: Schema.optionalKey(ChatWidth),
-  effortDisplay: Schema.optionalKey(EffortDisplay),
-  loadBalancingEnabled: Schema.optionalKey(Schema.Boolean),
-  loadBalancingWeights: Schema.optionalKey(LoadBalancingWeights),
-  appearanceContrast: Schema.optionalKey(AppearanceContrast),
-  panelAnimationDurationMs: Schema.optionalKey(PanelAnimationDurationMs),
-  browserDefaultViewport: Schema.optionalKey(PreviewViewportSetting),
-  browserDefaultZoomFactor: Schema.optionalKey(PreviewZoomFactor),
-  browserDefaultAppearance: Schema.optionalKey(PreviewAppearancePreference),
-  browserRecordingFrameRate: Schema.optionalKey(BrowserRecordingFrameRate),
-  browserRecordingShowKeyPresses: Schema.optionalKey(Schema.Boolean),
-  browserRecordingShowMousePresses: Schema.optionalKey(Schema.Boolean),
-  browserLinkTarget: Schema.optionalKey(BrowserLinkTarget),
-  browserSearchEngine: Schema.optionalKey(BrowserSearchEngine),
-  browserCustomSearchUrl: Schema.optionalKey(BrowserCustomSearchUrl),
-  browserAutoShowFloatingPreview: Schema.optionalKey(Schema.Boolean),
-  browserProfiles: Schema.optionalKey(Schema.Array(BrowserProfile)),
-  browserDefaultProfileId: Schema.optionalKey(BrowserProfileId),
-  confirmQuit: Schema.optionalKey(QuitConfirmationMode),
-  confirmThreadArchive: Schema.optionalKey(Schema.Boolean),
-  confirmThreadDelete: Schema.optionalKey(Schema.Boolean),
-  confirmThreadUnpin: Schema.optionalKey(Schema.Boolean),
-  diffFilesCollapsed: Schema.optionalKey(Schema.Boolean),
-  diffIgnoreWhitespace: Schema.optionalKey(Schema.Boolean),
-  diffLayout: Schema.optionalKey(DiffLayout),
-  environmentIdentificationMode: Schema.optionalKey(EnvironmentIdentificationMode),
-  glassOpacity: Schema.optionalKey(GlassOpacity),
-  onboardingCompletedAt: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  fontSizeInterface: Schema.optionalKey(InterfaceFontSize),
-  fontSizePrompt: Schema.optionalKey(PromptFontSize),
-  fontSizeCode: Schema.optionalKey(CodeFontSize),
-  fontSizeTerminal: Schema.optionalKey(TerminalFontSize),
-  fontFamilyCode: Schema.optionalKey(FontFamilyPreference),
-  fontFamilyComposer: Schema.optionalKey(FontFamilyPreference),
-  fontFamilySans: Schema.optionalKey(FontFamilyPreference),
-  fontFamilyTerminal: Schema.optionalKey(FontFamilyPreference),
-  fontSmoothing: Schema.optionalKey(Schema.Boolean),
-  persistComposerContextStrip: Schema.optionalKey(Schema.Boolean),
-  favorites: Schema.optionalKey(ModelFavorites),
-  providerModelPreferences: Schema.optionalKey(ProviderModelPreferences),
-  pullRequestMergeMethodOverrides: Schema.optionalKey(
-    Schema.Record(TrimmedNonEmptyString, PullRequestMergeMethod),
-  ),
-  pullRequestLinksOpenInApp: Schema.optionalKey(Schema.Boolean),
-  planModeEnabled: Schema.optionalKey(Schema.Boolean),
-  contextWindowMeterEnabled: Schema.optionalKey(Schema.Boolean),
-  composerRichTextEnabled: Schema.optionalKey(Schema.Boolean),
-  sendShortcut: Schema.optionalKey(Schema.Literals(["enter", "mod-enter-multiline", "mod-enter"])),
-  followUpBehavior: Schema.optionalKey(Schema.Literals(["queue", "steer"])),
-  proactivePanelsEnabled: Schema.optionalKey(Schema.Boolean),
-  showSkillsInSlashMenu: Schema.optionalKey(Schema.Boolean),
-  boringSidebarEnabled: Schema.optionalKey(Schema.Boolean),
-  boringSidebarMultilineRows: Schema.optionalKey(Schema.Boolean),
-  toolCallVisibility: Schema.optionalKey(ToolCallVisibility),
-  threadDetailsUsageEnabled: Schema.optionalKey(Schema.Boolean),
-  threadDetailsItems: Schema.optionalKey(Schema.Record(Schema.String, Schema.Boolean)),
-  legacySidebarEnabled: Schema.optionalKey(Schema.Boolean),
-  sidebarWorkingShelfEnabled: Schema.optionalKey(Schema.Boolean),
-  sidebarProjectGroupingMode: Schema.optionalKey(SidebarProjectGroupingMode),
-  sidebarProjectGroupingOverrides: Schema.optionalKey(
-    Schema.Record(TrimmedNonEmptyString, SidebarProjectGroupingMode),
-  ),
-  sidebarProjectSortOrder: Schema.optionalKey(SidebarProjectSortOrder),
-  sidebarThreadSortOrder: Schema.optionalKey(SidebarThreadSortOrder),
-  timestampFormat: Schema.optionalKey(TimestampFormat),
-  voiceMicrophone: Schema.optionalKey(Schema.String),
-  voiceShortcutMode: Schema.optionalKey(VoiceShortcutMode),
-  speechLanguage: Schema.optionalKey(SpeechLanguage),
-  speechTranslateToEnglish: Schema.optionalKey(Schema.Boolean),
-  speechCustomWords: Schema.optionalKey(SpeechCustomWords),
-  speechSilenceFiltering: Schema.optionalKey(Schema.Boolean),
-  speechRemoveFillerWords: Schema.optionalKey(Schema.Boolean),
-  speechPostProcessingPrompt: Schema.optionalKey(SpeechPostProcessingPromptSettings),
-  speechCorrectionWord: Schema.optionalKey(SpeechCorrectionCue),
-  snapShotEnabled: Schema.optionalKey(Schema.Boolean),
-  snapShotIncludeAccessibility: Schema.optionalKey(Schema.Boolean),
-  snapShotShortcut: Schema.optionalKey(SnapShotShortcut),
-  snapShotPlaySound: Schema.optionalKey(Schema.Boolean),
-  snapShotSound: Schema.optionalKey(SnapShotSound),
-  snapShotFlash: Schema.optionalKey(Schema.Boolean),
-  snapShotAnimations: Schema.optionalKey(Schema.Boolean),
-  wordWrap: Schema.optionalKey(Schema.Boolean),
-  mathRenderingEnabled: Schema.optionalKey(Schema.Boolean),
-});
-export type ClientSettingsPatch = typeof ClientSettingsPatch.Type;

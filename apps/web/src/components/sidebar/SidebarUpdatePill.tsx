@@ -10,7 +10,6 @@ import { settlePromise, squashAtomCommandFailure } from "@t3tools/client-runtime
 import { isElectron } from "../../env";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { cn } from "../../lib/utils";
-import { ensureLocalApi } from "../../localApi";
 import { useDesktopUpdateState } from "../../state/desktopUpdate";
 import { usePrimaryManagedPolicy } from "../../state/managedPolicy";
 import { stackedThreadToast, toastManager } from "../ui/toast";
@@ -21,7 +20,6 @@ import {
   getDesktopUpdateButtonTooltip,
   getDesktopUpdateDownloadedVersion,
   getDesktopUpdateIdleTooltip,
-  getDesktopUpdateInstallConfirmationMessage,
   isDesktopUpdateButtonDisabled,
   resolveDesktopUpdateButtonAction,
   shouldShowArm64IntelBuildWarning,
@@ -78,20 +76,23 @@ function openSidebarUpdateReleaseNotesPopoverOnForwardTab(
   flushSync(() => handle.open(triggerId));
 }
 
-function resolveSidebarUpdatePresentation({
+export function resolveSidebarUpdatePresentation({
   action,
   showsEverything,
   run,
+  isError,
   isDownloading,
   showCheckIcon,
 }: {
   readonly action: ReturnType<typeof resolveDesktopUpdateButtonAction>;
   readonly showsEverything: boolean;
   readonly run: UpdateEverythingRun | null;
+  readonly isError: boolean;
   readonly isDownloading: boolean;
   readonly showCheckIcon: boolean;
 }) {
-  const showUpdateDetails = action !== "none" || showsEverything || run !== null || isDownloading;
+  const showUpdateDetails =
+    action !== "none" || showsEverything || run !== null || isDownloading || isError;
   const iconStatus: DesktopUpdateStatusIconState = showCheckIcon
     ? "checking"
     : isDownloading
@@ -100,18 +101,87 @@ function resolveSidebarUpdatePresentation({
         ? run.localVersion !== null && action === "install"
           ? "downloaded"
           : "everything"
-        : showsEverything
-          ? "everything"
-          : action === "install"
-            ? "downloaded"
-            : action === "download"
-              ? "available"
-              : "idle";
+        : isError
+          ? "error"
+          : showsEverything
+            ? "everything"
+            : action === "install"
+              ? "downloaded"
+              : action === "download"
+                ? "available"
+                : "idle";
 
   return {
     iconStatus,
     showUpdateDetails,
     showUpdateIconState: showUpdateDetails && !showCheckIcon,
+  } as const;
+}
+
+export function resolveSidebarUpdateControlState(input: {
+  readonly state: DesktopUpdateState | null;
+  readonly showCheckIcon: boolean;
+  readonly isActionPending: boolean;
+  readonly everything?: { readonly hasUpdates: boolean; readonly summary: string };
+  readonly run?: UpdateEverythingRun | null;
+  /** A managed policy that turns updates off explains the disabled control. */
+  readonly updatesDenial?: string | undefined;
+}) {
+  const action = input.state ? resolveDesktopUpdateButtonAction(input.state) : "none";
+  const isDownloading = input.state?.status === "downloading";
+  const run = input.run ?? null;
+  const runsEverything = (input.everything?.hasUpdates ?? false) && !isDownloading;
+  const isRunningEverything = run !== null;
+  const presentation = resolveSidebarUpdatePresentation({
+    action,
+    showsEverything: runsEverything,
+    run,
+    isError: input.state?.status === "error",
+    isDownloading,
+    showCheckIcon: input.showCheckIcon,
+  });
+  const idleTooltip =
+    !presentation.showUpdateDetails && !input.showCheckIcon
+      ? getDesktopUpdateIdleTooltip(input.state, input.updatesDenial)
+      : null;
+  const tooltip =
+    runsEverything && input.everything
+      ? input.everything.summary
+      : presentation.showUpdateDetails
+        ? input.state
+          ? getDesktopUpdateButtonTooltip(input.state)
+          : "Update available"
+        : input.showCheckIcon
+          ? "Checking for updates…"
+          : !idleTooltip?.detail && input.state?.status === "up-to-date"
+            ? "P3 Code is up to date. Check again"
+            : (idleTooltip?.title ?? "Check for updates");
+  const disabled = input.showCheckIcon
+    ? true
+    : runsEverything
+      ? false
+      : presentation.showUpdateDetails
+        ? isDesktopUpdateButtonDisabled(input.state)
+        : !canCheckForUpdate(input.state);
+  const isInteractionDisabled = disabled || input.isActionPending || isRunningEverything;
+  const cursorClass =
+    input.showCheckIcon || input.isActionPending || isRunningEverything
+      ? "cursor-wait"
+      : disabled
+        ? "cursor-not-allowed"
+        : "cursor-pointer";
+
+  return {
+    ...presentation,
+    action,
+    cursorClass,
+    disabled,
+    idleTooltip,
+    isDownloading,
+    isInteractionDisabled,
+    isRunningEverything,
+    runsEverything,
+    tooltip,
   } as const;
 }
 
@@ -225,45 +295,36 @@ function SidebarUpdateControl() {
     }
   }
 
-  const action = state ? resolveDesktopUpdateButtonAction(state) : "none";
-  const isDownloading = state?.status === "downloading";
+  const localAction = state ? resolveDesktopUpdateButtonAction(state) : "none";
   const localUpdateVersion =
-    state && action !== "none" ? getDesktopUpdateDownloadedVersion(state) : null;
+    state && localAction !== "none" ? getDesktopUpdateDownloadedVersion(state) : null;
   const everything = useUpdateEverything(localUpdateVersion);
-  const runsEverything = everything.hasUpdates && !isDownloading;
   const run = useUpdateEverythingRun();
-  const isRunningEverything = run !== null;
   const showCheckIcon = shouldShowDesktopUpdateCheckIcon({
     isAnimationLatched: isCheckAnimationLatched,
     isChecking: state?.status === "checking",
     prefersReducedMotion,
   });
-  const { iconStatus, showUpdateDetails, showUpdateIconState } = resolveSidebarUpdatePresentation({
+  const {
     action,
-    showsEverything: runsEverything,
-    run,
-    isDownloading,
+    cursorClass,
+    disabled,
+    iconStatus,
+    idleTooltip,
+    isInteractionDisabled,
+    isRunningEverything,
+    runsEverything,
+    showUpdateDetails,
+    showUpdateIconState,
+    tooltip,
+  } = resolveSidebarUpdateControlState({
+    state,
     showCheckIcon,
+    isActionPending,
+    everything,
+    run,
+    updatesDenial,
   });
-  const idleTooltip =
-    !showUpdateDetails && !showCheckIcon ? getDesktopUpdateIdleTooltip(state, updatesDenial) : null;
-  const tooltip = runsEverything
-    ? everything.summary
-    : showUpdateDetails
-      ? state
-        ? getDesktopUpdateButtonTooltip(state)
-        : "Update available"
-      : showCheckIcon
-        ? "Checking for updates…"
-        : (idleTooltip?.title ?? "Check for updates");
-  const disabled = showCheckIcon
-    ? true
-    : runsEverything
-      ? false
-      : showUpdateDetails
-        ? isDesktopUpdateButtonDisabled(state)
-        : !canCheckForUpdate(state);
-  const isInteractionDisabled = disabled || isActionPending || isRunningEverything;
   const showReleaseNotesPopover =
     !isRunningEverything && shouldUseSidebarUpdateReleaseNotesPopover(showUpdateDetails, state);
 
@@ -297,26 +358,7 @@ function SidebarUpdateControl() {
     }
 
     if (action === "install") {
-      let confirmed = false;
-      try {
-        confirmed = await ensureLocalApi().dialogs.confirm(
-          getDesktopUpdateInstallConfirmationMessage(state),
-        );
-      } catch (error) {
-        setIsActionPending(false);
-        toastManager.add(
-          stackedThreadToast({
-            type: "error",
-            title: "Could not confirm update",
-            description: error instanceof Error ? error.message : "Update confirmation failed.",
-          }),
-        );
-        return;
-      }
-      if (!confirmed) {
-        setIsActionPending(false);
-        return;
-      }
+      // exowatt: one-click restart; the staged Homebrew update needs no second confirmation.
       void installLocalUpdate(bridge).finally(() => setIsActionPending(false));
       return;
     }
@@ -456,7 +498,7 @@ function SidebarUpdateControl() {
       aria-disabled={isInteractionDisabled || undefined}
       className={cn(
         "inline-flex size-8 items-center justify-center rounded-full outline-hidden ring-ring transition-colors focus-visible:ring-2 focus-visible:ring-inset",
-        isInteractionDisabled ? "cursor-not-allowed" : "cursor-pointer",
+        cursorClass,
         showUpdateIconState
           ? cn(
               "bg-sidebar-control-surface text-sidebar-foreground",

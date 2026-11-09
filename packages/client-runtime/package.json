@@ -91,6 +91,10 @@
       "types": "./src/markdownImages.ts",
       "default": "./src/markdownImages.ts"
     },
+    "./thread-links": {
+      "types": "./src/threadLinks.ts",
+      "default": "./src/threadLinks.ts"
+    },
     "./media-reference": {
       "types": "./src/mediaReference.ts",
       "default": "./src/mediaReference.ts"
@@ -179,9 +183,33 @@
       "types": "./src/state/connections.ts",
       "default": "./src/state/connections.ts"
     },
+    "./state/environment-http-auth": {
+      "types": "./src/state/environmentHttpAuth.ts",
+      "default": "./src/state/environmentHttpAuth.ts"
+    },
     "./state/entities": {
       "types": "./src/state/entities.ts",
       "default": "./src/state/entities.ts"
+    },
+    "./state/exowatt-connectors": {
+      "types": "./src/state/exowattConnectors.ts",
+      "default": "./src/state/exowattConnectors.ts"
+    },
+    "./state/exowatt-harness-config": {
+      "types": "./src/state/exowattHarnessConfig.ts",
+      "default": "./src/state/exowattHarnessConfig.ts"
+    },
+    "./state/exowatt-feads": {
+      "types": "./src/state/exowattFeads.ts",
+      "default": "./src/state/exowattFeads.ts"
+    },
+    "./state/exowatt-thread-hub": {
+      "types": "./src/state/exowattThreadHub.ts",
+      "default": "./src/state/exowattThreadHub.ts"
+    },
+    "./state/exowatt-thread-icons": {
+      "types": "./src/state/exowattThreadIcons.ts",
+      "default": "./src/state/exowattThreadIcons.ts"
     },
     "./state/filesystem": {
       "types": "./src/state/filesystem.ts",

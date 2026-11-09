@@ -7,6 +7,7 @@ import {
   ThreadId,
   type ScopedThreadRef,
   NodeId,
+  ProviderDriverKind,
   ProviderSessionId,
   RuntimeRequestId,
   TurnItemId,
@@ -321,6 +322,57 @@ describe("pending v2 questions", () => {
         ],
       },
     ]);
+  });
+
+  it("leaves Phi free-text hand-backs to the normal composer without hiding the needs-you request", () => {
+    const handback = {
+      ...projection,
+      runtimeRequests: projection.runtimeRequests.map((request) => ({
+        ...request,
+        nativeRequestRef: {
+          driver: ProviderDriverKind.make("phi"),
+          nativeId: "workspace-state:turn-1",
+          strength: "weak" as const,
+        },
+      })),
+      turnItems: projection.turnItems.map((item) =>
+        item.type === "user_input_request"
+          ? {
+              ...item,
+              questions: [
+                {
+                  id: "decision",
+                  header: "Phi",
+                  question: "Ship it?",
+                  options: [],
+                  allowCustomAnswer: true,
+                },
+              ],
+            }
+          : item,
+      ),
+    };
+    expect(handback.runtimeRequests[0]?.status).toBe("pending");
+    expect(derivePendingThreadRequests(handback).userInputs).toEqual([]);
+    // A real form (even a message-mode, free-text one) must still take the
+    // question composer; likewise a structured Phi question must not be ignored.
+    const otherProvider = {
+      ...handback,
+      runtimeRequests: handback.runtimeRequests.map((request) => ({
+        ...request,
+        nativeRequestRef: {
+          driver: ProviderDriverKind.make("codex"),
+          nativeId: "workspace-state:turn-1",
+          strength: "weak" as const,
+        },
+      })),
+    };
+    expect(derivePendingThreadRequests(otherProvider).userInputs).toHaveLength(1);
+    const structuredPhi = {
+      ...handback,
+      turnItems: projection.turnItems,
+    };
+    expect(derivePendingThreadRequests(structuredPhi).userInputs).toHaveLength(1);
   });
 
   it("only marks asynchronous questions as dismissible", () => {

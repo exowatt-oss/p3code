@@ -3,6 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { deriveProviderInstanceEntries } from "../../providerInstances";
 import { hasDismissedResumeCompaction } from "@t3tools/client-runtime/state/context-window";
 import {
+  formatContextWindowCost,
   hasAvailableCompactionProvider,
   resolveContextWindowModelDisplayName,
   shouldReserveContextWindowMeter,
@@ -155,5 +156,13 @@ describe("shouldReserveContextWindowMeter", () => {
         providerReportsContextWindow: null,
       }),
     ).toBe(true);
+  });
+});
+
+describe("formatContextWindowCost", () => {
+  it("keeps ordinary and sub-cent ACP costs readable", () => {
+    expect(formatContextWindowCost({ amount: 0.42, currency: "USD" })).toBe("$0.42");
+    expect(formatContextWindowCost({ amount: 0.0042, currency: "USD" })).toBe("$0.0042");
+    expect(formatContextWindowCost({ amount: 1.5, currency: "EUR" })).toBe("EUR 1.50");
   });
 });

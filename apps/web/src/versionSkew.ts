@@ -1,8 +1,9 @@
-import type {
-  EnvironmentId,
-  ServerConfig,
-  ServerInstallation,
-  ServerSelfUpdateCapability,
+import {
+  type EnvironmentId,
+  isExowattDevServerVersion,
+  type ServerConfig,
+  type ServerInstallation,
+  type ServerSelfUpdateCapability,
 } from "@t3tools/contracts";
 import type { ServerUpdateState } from "@t3tools/client-runtime/state/server";
 import { compareSemverVersions, parseSemver } from "@t3tools/shared/semver";
@@ -73,7 +74,7 @@ export function resolveVersionMismatch(
   return {
     clientVersion: normalizedClientVersion,
     serverVersion: normalizedServerVersion,
-    hint: "Version mismatch. Try syncing the client and server to the same T3 Code version.",
+    hint: "Version mismatch. Try syncing the client and server to the same P3 Code version.",
   };
 }
 
@@ -106,6 +107,37 @@ export function manualServerUpdateCommand(
   const runner =
     installation?.kind === "pnpm-dlx" ? "pnpm dlx" : installation?.kind === "bunx" ? "bunx" : "npx";
   return `${runner} t3@${targetVersion}`;
+}
+
+// exowatt: P3 releases are versioned `<upstream>-exowatt.<n>` and pushed dev servers
+// `0.0.0-dev.<sha>`; neither exists as `t3` on npm.
+const EXOWATT_P3_RELEASE_VERSION = /-exowatt\.\d+/u;
+
+export function isExowattP3Version(version: string | null | undefined): boolean {
+  const normalized = normalizeVersion(version);
+  return (
+    normalized !== null &&
+    (EXOWATT_P3_RELEASE_VERSION.test(normalized) || isExowattDevServerVersion(normalized))
+  );
+}
+
+/** exowatt: shown instead of an update or relaunch command for a P3 server. */
+export const EXOWATT_P3_SERVER_UPDATE_GUIDANCE = "P3 servers update from the P3 Code desktop app";
+
+/**
+ * exowatt: a P3 server (or an update to a P3 build) never installs or relaunches stock `t3` from
+ * npm: that would replace the P3 server and drop Phi. Only a desktop-managed server updates in
+ * place, through its own P3 desktop app; every other one gets the P3 guidance instead.
+ */
+export function requiresExowattDesktopServerUpdate(target: {
+  readonly selfUpdate: ServerSelfUpdateCapability | null;
+  readonly serverVersion?: string | null | undefined;
+  readonly targetVersion: string;
+}): boolean {
+  return (
+    target.selfUpdate !== "desktop-managed" &&
+    (isExowattP3Version(target.serverVersion) || isExowattP3Version(target.targetVersion))
+  );
 }
 
 export function buildVersionMismatchDismissalKey(

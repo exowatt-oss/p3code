@@ -4,6 +4,7 @@ import * as NodeModule from "node:module";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
+import { PRODUCT_BASE_NAME } from "@t3tools/shared/productBranding";
 import { ensureElectronRuntime } from "./ensure-electron-runtime.mjs";
 
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
@@ -13,10 +14,12 @@ const repoRoot = NodePath.resolve(desktopDir, "..", "..");
 const devBundleIdSuffix = NodePath.basename(repoRoot)
   .toLowerCase()
   .replaceAll(/[^a-z0-9]+/g, "");
-const APP_DISPLAY_NAME = isDevelopment ? "T3 Code (Dev)" : "T3 Code (Beta)";
-const APP_BUNDLE_ID = isDevelopment
-  ? `com.t3tools.t3code.dev.${devBundleIdSuffix || "local"}`
-  : "com.t3tools.t3code";
+export const APP_DISPLAY_NAME = isDevelopment
+  ? `${PRODUCT_BASE_NAME} (Dev)`
+  : `${PRODUCT_BASE_NAME} (Beta)`;
+export const APP_BUNDLE_ID = isDevelopment
+  ? `com.exowatt.p3code.dev.${devBundleIdSuffix || "local"}`
+  : "com.exowatt.p3code";
 const APP_PROTOCOL_SCHEMES = isDevelopment ? ["t3code-dev"] : ["t3code"];
 const LAUNCHER_VERSION = 20;
 const developmentMacIconPngPath = NodePath.join(
@@ -117,8 +120,25 @@ export function makeDevelopmentEnvironmentScript(environment) {
     ["T3CODE_OTLP_HEADERS", environment.T3CODE_OTLP_HEADERS],
     ["T3CODE_OTLP_PROTOCOL", environment.T3CODE_OTLP_PROTOCOL],
     ["T3CODE_DESKTOP_APP_USER_MODEL_ID", APP_BUNDLE_ID],
+    // exowatt: a Dock/Spotlight relaunch of the runtime bundle must keep the
+    // dev launcher's Keychain + instance settings, or the connection catalog
+    // stops decrypting (apps/desktop/src/main.ts).
+    ["T3CODE_DEV_INSTANCE", environment.T3CODE_DEV_INSTANCE],
+    ["T3CODE_DESKTOP_KEYCHAIN_APP_NAME", environment.T3CODE_DESKTOP_KEYCHAIN_APP_NAME],
   ].filter((entry) => typeof entry[1] === "string" && entry[1].trim().length > 0);
+  // exowatt: this bundle also has a Dock tile and a Spotlight entry. Started
+  // from either (no dev-runner environment) it would boot the last build
+  // without pulling, so when the P3 Code Dev launcher app is known, hand off
+  // to it instead — every launch path then goes through "pull latest & restart".
+  const relaunchApp = environment.T3CODE_DEV_RELAUNCH_APP?.trim();
+  const relaunchShim =
+    relaunchApp && relaunchApp.endsWith(".app")
+      ? [
+          `if [ -z "\${VITE_DEV_SERVER_URL:-}" ] && [ -d ${shellSingleQuote(relaunchApp)} ]; then exec /usr/bin/open -a ${shellSingleQuote(relaunchApp)}; fi`,
+        ]
+      : [];
   return [
+    ...relaunchShim,
     ...envEntries.map(
       ([name, value]) =>
         `if [ -z "\${${name}:-}" ]; then export ${name}=${shellSingleQuote(value)}; fi`,
@@ -267,9 +287,8 @@ function resolveMacBundleInfoPlistStrings(executableName) {
     CFBundleIdentifier: APP_BUNDLE_ID,
     CFBundleExecutable: executableName,
     CFBundleIconFile: "icon.icns",
-    NSScreenCaptureUsageDescription:
-      "T3 Code captures the active window when you use the snapshot shortcut.",
-    NSDocumentsFolderUsageDescription: "T3 Code reads project files you open in the desktop app.",
+    NSScreenCaptureUsageDescription: `${PRODUCT_BASE_NAME} captures the active window when you use the snapshot shortcut.`,
+    NSDocumentsFolderUsageDescription: `${PRODUCT_BASE_NAME} reads project files you open in the desktop app.`,
   };
 }
 

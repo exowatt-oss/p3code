@@ -154,6 +154,8 @@ export interface PreparedConnection {
   readonly socketUrl: string;
   readonly httpAuthorization: PreparedHttpAuthorization | null;
   readonly target: ConnectionTarget;
+  /** exowatt: this desktop's server as an SSH remote reaches it (the tunnel's reverse forward). */
+  readonly reverseHttpBaseUrl?: string;
 }
 
 export type SupervisorConnectionPhase =

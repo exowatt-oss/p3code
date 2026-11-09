@@ -11,6 +11,8 @@ import * as Semaphore from "effect/Semaphore";
 import * as Electron from "electron";
 
 import { type DesktopSnapShotEvent, DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts";
+import { isNonThreadApplicationRouteRoot } from "@t3tools/client-runtime/thread-links";
+import { isLoopbackHost } from "@t3tools/shared/preview";
 
 import * as DesktopAssets from "../app/DesktopAssets.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
@@ -23,6 +25,7 @@ import * as ElectronTheme from "../electron/ElectronTheme.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import {
   MENU_ACTION_CHANNEL,
+  NAVIGATE_HISTORY_CHANNEL,
   QUIT_SHORTCUT_CHANNEL,
   SNAP_SHOT_EVENT_CHANNEL,
   TRACKPAD_SCROLL_BEGIN_CHANNEL,
@@ -192,6 +195,34 @@ function buildConnectingSplashDataUrl(shouldUseDarkColors: boolean): string {
   const track = shouldUseDarkColors ? "rgba(248,250,252,0.18)" : "rgba(31,41,55,0.18)";
   const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'"><style>html,body{margin:0;height:100%}body{background:${background};color:${label};font-family:system-ui,-apple-system,'Segoe UI',sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;-webkit-user-select:none;user-select:none;-webkit-app-region:drag}.spinner{width:26px;height:26px;border:3px solid ${track};border-top-color:${accent};border-radius:50%;animation:spin .8s linear infinite}.label{font-size:13px}@keyframes spin{to{transform:rotate(360deg)}}</style></head><body><div class="spinner"></div><div class="label">Connecting to WSL…</div></body></html>`;
   return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
+}
+
+export function isApplicationThreadNavigationUrl(input: {
+  readonly applicationUrl: string;
+  readonly navigationUrl: string;
+}): boolean {
+  try {
+    const navigation = new URL(input.navigationUrl, input.applicationUrl);
+    if (navigation.protocol === "p3:" && navigation.hostname === "thread") {
+      return navigation.pathname.split("/").filter(Boolean).length === 1;
+    }
+
+    // App-owned renderer routes are handled by the delegated web navigation
+    // listener. Only the documented local server URL is unambiguously a thread
+    // link here; treating every same-app two-segment path as one breaks routes
+    // such as /settings/connections and /customize/appearance.
+    const isKnownLoopbackRoute =
+      (navigation.protocol === "http:" || navigation.protocol === "https:") &&
+      isLoopbackHost(navigation.hostname) &&
+      navigation.port === "3773";
+    if (!isKnownLoopbackRoute) return false;
+
+    const path = navigation.hash.startsWith("#/") ? navigation.hash.slice(1) : navigation.pathname;
+    const segments = path.split("/").filter(Boolean);
+    return segments.length === 2 && !isNonThreadApplicationRouteRoot(segments[0]!);
+  } catch {
+    return false;
+  }
 }
 
 export function isSameOriginRendererNavigation(input: {
@@ -626,12 +657,19 @@ export const make = Effect.gen(function* () {
     });
 
     window.webContents.setWindowOpenHandler(({ url }) => {
+      if (isApplicationThreadNavigationUrl({ applicationUrl, navigationUrl: url })) {
+        return { action: "deny" };
+      }
       if (Option.isSome(ElectronShell.parseSafeExternalUrl(url))) {
         void runPromise(electronShell.openExternal(url));
       }
       return { action: "deny" };
     });
     window.webContents.on("will-navigate", (event, url) => {
+      if (isApplicationThreadNavigationUrl({ applicationUrl, navigationUrl: url })) {
+        event.preventDefault();
+        return;
+      }
       if (
         isSameOriginRendererNavigation({
           applicationUrl,
@@ -669,6 +707,15 @@ export const make = Effect.gen(function* () {
       quit: () => {
         void runPromise(electronApp.quit);
       },
+    });
+    window.on("app-command", (_event, command) => {
+      if (command !== "browser-backward" && command !== "browser-forward") return;
+      if (!window.isDestroyed()) {
+        window.webContents.send(
+          NAVIGATE_HISTORY_CHANNEL,
+          command === "browser-backward" ? "back" : "forward",
+        );
+      }
     });
     window.webContents.on("before-input-event", (event, input) => {
       quitShortcutHandler(event, input);

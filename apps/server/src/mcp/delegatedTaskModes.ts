@@ -29,6 +29,18 @@ export function interactionModeRank(mode: ProviderInteractionMode): number {
 }
 
 /**
+ * Whether a provider's advertised modes include "auto". An empty or undefined list is not a
+ * restricted set, so "auto" counts as supported (as `providerRuntimeMode` in RuntimePolicy.ts).
+ */
+function targetSupportsAuto(targetSupportedModes: ReadonlyArray<RuntimeMode> | undefined): boolean {
+  return (
+    targetSupportedModes === undefined ||
+    targetSupportedModes.length === 0 ||
+    targetSupportedModes.includes("auto")
+  );
+}
+
+/**
  * The mode a child runs at: the one asked for, never broader than its parent's.
  * An inherited mode the target provider does not offer steps down to the
  * broadest one it does; an explicitly requested one is refused instead.
@@ -42,7 +54,14 @@ export function resolveRuntimeMode(
   },
 ): Effect.Effect<RuntimeMode, OrchestratorMcpFailure> {
   const inherited = requested === undefined || requested === "inherit";
-  const resolved = inherited ? parentMode : requested;
+  let resolved = inherited ? parentMode : requested;
+  // exowatt: Pi has no "auto" mode. Never refuse it or collapse it to "approval-required" (every
+  // tool call would prompt); fall back to the parent's own mode, which cannot escalate, or to
+  // "auto-accept-edits" when the parent itself runs "auto" on a provider that supports it.
+  const autoFallback = resolved === "auto" && !targetSupportsAuto(target?.supportedRuntimeModes);
+  if (autoFallback) {
+    resolved = parentMode === "auto" ? "auto-accept-edits" : parentMode;
+  }
   if (runtimeModeRank(resolved) > runtimeModeRank(parentMode)) {
     return Effect.fail(
       new OrchestratorMcpFailure({
@@ -55,7 +74,7 @@ export function resolveRuntimeMode(
   if (supported === undefined || supported.length === 0 || supported.includes(resolved)) {
     return Effect.succeed(resolved);
   }
-  if (!inherited) {
+  if (!inherited && !autoFallback) {
     return Effect.fail(
       new OrchestratorMcpFailure({
         code: "invalid_request",

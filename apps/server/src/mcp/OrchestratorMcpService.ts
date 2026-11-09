@@ -420,6 +420,37 @@ function invalidOptionSelections(
   return problems;
 }
 
+/**
+ * exowatt: the parent's options for a target that only overrides the model. Keeps options the
+ * target advertises under the same id, clamping a `select` value to one of its choices (or its
+ * default); anything else is dropped rather than carried onto an unrelated model.
+ */
+function inheritableOptionSelections(
+  inherited: ReadonlyArray<ProviderOptionSelection> | undefined,
+  descriptors: ReadonlyArray<ProviderOptionDescriptor> | undefined,
+): ReadonlyArray<ProviderOptionSelection> {
+  if (inherited === undefined || descriptors === undefined || descriptors.length === 0) return [];
+  const result: Array<ProviderOptionSelection> = [];
+  for (const selection of inherited) {
+    const descriptor = descriptors.find((candidate) => candidate.id === selection.id);
+    if (descriptor === undefined) continue;
+    if (descriptor.type === "boolean") {
+      if (typeof selection.value === "boolean") result.push(selection);
+      continue;
+    }
+    if (descriptor.type === "select") {
+      const exact = descriptor.options.find((choice) => choice.id === selection.value);
+      if (exact !== undefined) {
+        result.push(selection);
+        continue;
+      }
+      const fallback = descriptor.options.find((choice) => choice.isDefault === true);
+      if (fallback !== undefined) result.push({ id: selection.id, value: fallback.id });
+    }
+  }
+  return result;
+}
+
 function taskStatusForRun(
   run: Pick<OrchestrationV2Run, "status" | "restartCancelledBackgroundWork"> | undefined,
 ): OrchestratorMcpDelegateTaskResult["status"] {
@@ -960,6 +991,15 @@ function turnItemText(item: OrchestrationV2TurnItem): string | null {
       return item.result ?? item.progress ?? item.prompt;
     case "dynamic_tool":
       return jsonText({ toolName: item.toolName, input: item.input, output: item.output });
+    case "workspace_state":
+      return [
+        `Session state: ${item.payload.endState}`,
+        item.payload.question,
+        ...item.payload.openItems.map((openItem) => `- ${openItem}`),
+        item.payload.feadsEpic === undefined ? undefined : `feads: ${item.payload.feadsEpic}`,
+      ]
+        .filter((line): line is string => line !== undefined)
+        .join("\n");
   }
 }
 
@@ -1466,6 +1506,16 @@ const make = Effect.gen(function* () {
         selections.set(selection.id, selection);
       }
       options = [...selections.values()];
+    } else if (!inheritsOptions) {
+      // exowatt: a model-only override keeps the parent's effort, clamped to what the
+      // target model advertises; the child would otherwise run at its default.
+      const targetDescriptors = provider.models.find((candidate) => candidate.slug === model)
+        ?.capabilities?.optionDescriptors;
+      const inheritedOptions = inheritableOptionSelections(
+        inheritedSelection.options,
+        targetDescriptors,
+      );
+      if (inheritedOptions.length > 0) options = inheritedOptions;
     }
     return {
       modelSelection: { instanceId, model, ...(options === undefined ? {} : { options }) },
@@ -1609,10 +1659,8 @@ const make = Effect.gen(function* () {
     const result = {
       taskId: task.id,
       childThreadId: task.childThreadId,
-      link: formatThreadLink({
-        environmentId: scope.environmentId,
-        threadId: task.childThreadId,
-      }),
+      // exowatt: local child threads get P3's `p3://thread/<id>` link.
+      link: formatThreadLink({ environmentId: null, threadId: task.childThreadId }),
       childRunId: childRun?.id ?? null,
       childNodeId: task.id,
       status,
@@ -2966,7 +3014,7 @@ const make = Effect.gen(function* () {
                 );
               return {
                 threadId,
-                link: formatThreadLink({ environmentId: scope.environmentId, threadId }),
+                link: formatThreadLink({ environmentId: null, threadId }),
                 runId: run?.id ?? null,
                 status: run?.status ?? "idle",
                 title: projection.thread.title,

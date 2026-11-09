@@ -462,6 +462,87 @@ describe("DesktopShellEnvironment", () => {
     }),
   );
 
+  it("parses NUL-separated environments without truncating equals signs or newlines", () => {
+    assert.deepEqual(
+      DesktopShellEnvironment.parseNullSeparatedEnvironment(
+        [
+          "SIMPLE=value",
+          "WITH_EQUALS=left=middle=right",
+          "WITH_NEWLINE=first line\nsecond line",
+          "=missing-name",
+          "INVALID-NAME=ignored",
+          "EMPTY=",
+          "",
+        ].join("\0"),
+      ),
+      {
+        SIMPLE: "value",
+        WITH_EQUALS: "left=middle=right",
+        WITH_NEWLINE: "first line\nsecond line",
+        EMPTY: "",
+      },
+    );
+  });
+
+  // Harnesses must inherit the RECONCILED allowlist values, not the raw shell ones:
+  // a phi found only through the launcher PATH would otherwise be unresolvable, and
+  // the macOS UTF-8 locale fallback would stop applying to agents.
+  it("reconciles the harness environment with the hydrated allowlist values", () => {
+    const rawLogin = {
+      PATH: "/opt/homebrew/bin:/usr/bin",
+      SSH_AUTH_SOCK: "/tmp/shell.sock",
+      SLACK_USER_TOKEN: "xoxp-kept-verbatim",
+      SHLVL: "1",
+    };
+    const hydratedPath = "/opt/homebrew/bin:/usr/bin:/Applications/P3.app/Contents/Resources/bin";
+    const reconciled: NodeJS.ProcessEnv = {
+      PATH: hydratedPath,
+      SSH_AUTH_SOCK: "/private/tmp/launchd.sock",
+      LC_CTYPE: "UTF-8",
+      UNRELATED_DESKTOP_VAR: "must-not-leak-in",
+    };
+
+    assert.deepEqual(DesktopShellEnvironment.reconcileHarnessEnvironment(rawLogin, reconciled), {
+      PATH: hydratedPath,
+      SSH_AUTH_SOCK: "/private/tmp/launchd.sock",
+      LC_CTYPE: "UTF-8",
+      SLACK_USER_TOKEN: "xoxp-kept-verbatim",
+      SHLVL: "1",
+    });
+  });
+
+  it("leaves an empty capture empty so the caller reports no harness environment", () => {
+    assert.deepEqual(
+      DesktopShellEnvironment.reconcileHarnessEnvironment({}, { PATH: "/usr/bin" }),
+      {},
+    );
+  });
+
+  // exowatt: the full `env -0` capture rides on upstream's allowlist command, except under nushell.
+  it.effect("adds the full env capture to POSIX login shells but not to nushell", () =>
+    Effect.gen(function* () {
+      const scripts = new Map<string, string>();
+      yield* runShellEnvironment({
+        env: { SHELL: "/opt/homebrew/bin/nu", PATH: "/usr/bin" },
+        platform: "darwin",
+        handler: (command) => {
+          if (command._tag !== "StandardCommand") return "";
+          const script = command.args.at(-1);
+          scripts.set(command.command, typeof script === "string" ? script : "");
+          return command.command === "/bin/zsh" ? envOutput({ PATH: "/opt/bin:/usr/bin" }) : "";
+        },
+      });
+
+      assert.include(scripts.get("/bin/zsh") ?? "", "env -0");
+      assert.include(scripts.get("/bin/zsh") ?? "", "__T3CODE_ENV_PATH_START__");
+      assert.notInclude(scripts.get("/opt/homebrew/bin/nu") ?? "", "env -0");
+      assert.include(
+        scripts.get("/opt/homebrew/bin/nu") ?? "",
+        "print '__T3CODE_ENV_PATH_START__'",
+      );
+    }),
+  );
+
   it.effect("hydrates PATH and missing SSH_AUTH_SOCK from the login shell on macOS", () =>
     Effect.gen(function* () {
       const env: NodeJS.ProcessEnv = {

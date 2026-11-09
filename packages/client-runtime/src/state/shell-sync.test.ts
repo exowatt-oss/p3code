@@ -875,14 +875,13 @@ describe("environment shell synchronization", () => {
       const stateWhere = (predicate: (state: EnvironmentShellState) => boolean) =>
         SubscriptionRef.changes(shellState).pipe(Stream.filter(predicate), Stream.runHead);
 
-      // Both transports must omit, or omitted children would come back through the socket.
-      expect(yield* Queue.take(subscribeInputs)).toMatchObject({
-        afterSequence: 1,
-        omitIdleSubagents: true,
-        omitOlderSettled: true,
-      });
+      // Both transports must agree, or omitted rows would come back through the socket.
+      // exowatt: P3 keeps idle subagent children (sidebar nesting, Hub) and omits only older settled.
+      const input = yield* Queue.take(subscribeInputs);
+      expect(input).toMatchObject({ afterSequence: 1, omitOlderSettled: true });
+      expect(input).not.toHaveProperty("omitIdleSubagents");
       expect(yield* Ref.get(loadOptions)).toEqual([
-        { omitIdleSubagents: true, omitOlderSettled: true },
+        { omitIdleSubagents: false, omitOlderSettled: true },
       ]);
       const loaded = Option.getOrThrow(yield* stateWhere((state) => state.generation > 0));
       expect(loaded.removedAt.size).toBe(0);
@@ -915,11 +914,9 @@ describe("environment shell synchronization", () => {
 
       // A reconnect resumes the server-loaded shell from its cursor, with no second HTTP load.
       yield* SubscriptionRef.set(activeSession, Option.some({ ...familySession }));
-      expect(yield* Queue.take(subscribeInputs)).toMatchObject({
-        afterSequence: 5,
-        omitIdleSubagents: true,
-        omitOlderSettled: true,
-      });
+      const resumed = yield* Queue.take(subscribeInputs);
+      expect(resumed).toMatchObject({ afterSequence: 5, omitOlderSettled: true });
+      expect(resumed).not.toHaveProperty("omitIdleSubagents");
       expect(yield* Ref.get(loadOptions)).toHaveLength(1);
 
       // A migrated server may have rewritten rows without events, so it reloads.
@@ -1107,12 +1104,14 @@ describe("environment shell synchronization", () => {
       yield* Deferred.await(firstFillStarted);
 
       // New omissions make the next session reload instead of resuming.
+      // exowatt: P3 never omits idle subagents, so only older settled threads change the omissions.
       yield* SubscriptionRef.set(
         activeSession,
         Option.some({
           ...session(client),
           initialConfig: Effect.succeed({
             shellThreadFamilies: true,
+            shellOlderSettled: true,
             environment: { serverVersion: "1.0.0" },
           } as never),
         }),

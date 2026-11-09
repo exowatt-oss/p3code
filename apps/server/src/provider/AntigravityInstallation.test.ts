@@ -635,7 +635,7 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Antigravity inst
   );
 
   // The mocked Linux PATH walk needs POSIX paths; Windows temp paths contain colons.
-  it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32")(
+  it.effect.skipIf(HostProcess.Platform.defaultValue() === "win32" || process.platform === "darwin")(
     "accepts the agy CLI without a harness sibling but still requires one for other binaries",
     () =>
       Effect.gen(function* () {

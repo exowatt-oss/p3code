@@ -1,0 +1,9 @@
+{
+  // Cursor accepts JSONC in mcp.json.
+  "mcpServers": {
+    "browser": {
+      "command": "node",
+      "args": ["server.mjs"]
+    }
+  }
+}

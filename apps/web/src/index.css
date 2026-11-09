@@ -42,12 +42,12 @@ html[data-mobile-composer-route-transition="true"]::view-transition-new(t3-mobil
   mix-blend-mode: normal;
 }
 
-/* The expanded and compact composers have different internal layouts. Use a
-   brief crossfade while their shared wrapper moves so the layout change does
-   not read as a single-frame cut. */
+/* The expanded and compact composers have different internal layouts. Keep
+   exactly one View Transition snapshot visible while their shared wrapper
+   moves: overlapping snapshots looked like two interactive composer panels. */
 @keyframes t3-mobile-composer-old {
   0%,
-  35% {
+  64.999% {
     opacity: 1;
   }
   65%,
@@ -58,7 +58,7 @@ html[data-mobile-composer-route-transition="true"]::view-transition-new(t3-mobil
 
 @keyframes t3-mobile-composer-new {
   0%,
-  35% {
+  64.999% {
     opacity: 0;
   }
   65%,
@@ -677,7 +677,7 @@ html[data-mobile-composer-route-transition="true"]::view-transition-old(t3-mobil
     background-color: color-mix(in oklab, var(--primary) 45%, transparent);
   }
   :root {
-    /* Keep the original T3 Code artwork palettes as the defaults. Built-in
+    /* Keep the original app artwork palettes as the defaults. Built-in
        themes override them with their own pigments in the components layer. */
     --stage-art-top: oklch(0.782169 0.123386 240.226);
     --stage-art-mid: oklch(0.616111 0.195824 259.735);

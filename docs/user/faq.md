@@ -1,88 +1,31 @@
-# FAQ
+# P3 Code FAQ
 
-## Is T3 Code a harness?
+P3 Code is an independent, source-only fork of [T3 Code](https://github.com/pingdotgg/t3code), built at Exowatt. T3 Tools Inc. does not endorse or distribute this fork.
 
-No. A harness is what turns an LLM into an agent: it gives the model tools, a way to call them, runs them, and hands the results back. Claude Code is kind of a harness. It is an interface (the TUI, the Code tab in the desktop app) plus a harness underneath (the Anthropic Agent SDK). Codex is the same split: the app plus the Codex App Server. T3 Code uses those harnesses. It is not a harness, and it does not work without one.
+## Is P3 Code a coding-agent provider?
 
-Chef = LLM. Kitchen = harness. T3 Code = the restaurant that lets you bring whatever kitchen you want. Our MCP is a cookbook we hand the kitchen, but the chef won't open it unless you tell them to :) I wrote the long version here: [What is a harness?](https://t3.gg/blog/post/what-is-a-harness)
+No. P3 Code is a workspace and interface for providers you install and authenticate separately, such as Codex, Claude Code, or Phi. Their subscriptions and terms are yours to manage.
 
-Bring your own: Claude Code, Codex, Cursor, Grok Build, OpenCode, Google Antigravity, Pi, or Muse Code. [Provider setup](./install.md#providers)
+## How do I install or update it?
 
-## Why use T3 Code instead of Claude Code or the Codex app?
+[Build this fork from source](./install.md) and update from its own repository. Upstream `t3.codes` installers, npm packages, app-store listings and T3 Chat plans are for **T3 Code**, not P3 Code. No signed P3 installers or hosted app are currently published.
 
-We were inspired by the Codex desktop app, Conductor, Claude Desktop, and Cursor Glass, but none met our bar. What you get:
+## Does it require an Exowatt account?
 
-- Bring your own sub. Claude, Codex, and whatever else you already have installed.
-- Best in class remote. Run `npx t3 up` on any box and drive it from anywhere.
-- Best in class mobile app.
-- Truly 100% open source. If we go the wrong direction, fork it.
+No. The local server and core coding-agent workflows work without Exowatt services. Phi and Feads are optional; provide your own binary or Feads URL and token if you choose to use them. See [Phi](./providers-phi.md) and [agent access](./agent-access.md).
 
-Every harness feels nearly identical in here, so you can stop worrying about harnesses and focus on building :) [Install](./install.md)
+## Can I connect multiple provider accounts?
 
-## Can I use T3 Code with my Claude Code subscription?
+P3 Code does not automate cycling accounts to evade provider limits. Only connect accounts in ways your provider permits; use separate profiles or machines when their terms require it.
 
-Yes.
+## Can I use it remotely?
 
-## How much does T3 Code cost?
+Yes. Run the P3 server on the machine that owns your projects and connect over your LAN or your own tailnet using pairing. See [remote access](./remote-access.md). Do not use upstream T3 Code's hosted site as a P3 client.
 
-Nothing. There's no way to pay us to use T3 Code. You bring your own sub. It is free and open source (MIT). You still pay your provider like you already do. T3 Connect is free too, for now. Every account can connect up to 3 machines running T3 Code. Phones and browsers that connect to them do not count. Need more? Link a paid T3 Chat account. [More machines](#can-i-connect-more-than-3-machines-with-t3-connect) We don't want to charge for this, but if the bill gets unacceptable we may have to change course. If you hit limits or have issues, you can always fork it, self host, or use Tailscale. [Install](./install.md)
+## Can I use it on a phone?
 
-## Can I connect more than 3 machines with T3 Connect?
+The mobile app is source code only. Build it with your own Android/iOS tooling, bundle identifiers and signing credentials; see [installation](./install.md) and the [mobile build guide](../../apps/mobile/README.md). Upstream App Store and Google Play builds do not contain this fork.
 
-Yes. Link your T3 Chat account and T3 Connect raises your limit: up to 10 machines with T3 Chat Pro, or 100 with Premier. Open your account menu in T3 Code, go to **T3 Chat**, and select **Link T3 Chat**. Sign in to T3 Chat and approve. The free T3 Chat plan keeps the normal limit of 3. [More machines with T3 Chat](./remote-access.md#more-machines-with-t3-chat)
+## Who receives my code and prompts?
 
-## Why is my Claude 5-hour limit draining so fast?
-
-T3 Code drives Claude through Anthropic's Agent SDK. I confirmed it's a real bug on Anthropic's side: all Agent SDK usage will drain your 5h limits faster than using Claude Code directly. To be clear: this does not affect weekly limits. We have reported it to Anthropic and are hoping for a fix soon. [My post on it](https://x.com/theo/status/2114166439813017873)
-
-## How do I use T3 Code remotely?
-
-Your agents run wherever T3 Code runs: your desktop, a server, a VPS. You connect to it from anywhere. I do this constantly. Less than 5% of my prompts run on my laptop. Run `npx t3 up` on that machine and you get really good remote support. T3 Connect is the easy path. LAN pairing and Tailscale work too, and [app.t3.codes](https://app.t3.codes) is the web client. [Remote access](./remote-access.md)
-
-## How do I use T3 Code on my phone?
-
-Get the [iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824) or [Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code) app, then connect it to your computer with T3 Connect or a pairing link. The phone is a remote. Your computer does the work and needs to stay on. [Mobile setup](./install.md#mobile-app) · [Remote access](./remote-access.md)
-
-## Why does T3 Connect keep disconnecting?
-
-T3 Connect is our built-in alternative to Tailscale for remote connections. If it keeps dropping, open **Settings > Environments**, find the machine, and select **Details**. The first part marked as failed is the cause. I will not be disappointed if you set up Tailscale as a fallback (I do this personally). [T3 Connect troubleshooting](./t3-connect-troubleshooting.md)
-
-## Will I get banned for using my subscription?
-
-No. We work with all of the labs and T3 Code is within the TOS of Claude Code, Codex, and Google Antigravity. We worked directly with [SpaceXAI](https://x.com/SpaceXSI/status/2070195830192320600) to collaborate on the Grok Build and Cursor integrations. Everything else uses official ACP bindings.
-
-If it works in T3 Code, you can trust it is safe.
-
-## Can I add a bunch of accounts for one provider?
-
-I don't think T3 Code is the right place to manage a pile of accounts. If we add an auto-switcher, we are risking TOS bans for our users.
-
-A separate work account is fine. Setup for two: [Codex](./providers-codex.md#use-multiple-accounts) · [Claude](./providers-claude.md#separate-accounts-or-configurations). For a bigger pool, manage them outside T3 Code with a self-hosted proxy like [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI). I walked through how I use 6 Claude subs and 3 Codex subs in [this video](https://www.youtube.com/watch?v=D8PikZ1KhUo), and wrote up the setup in [this guide](https://gist.github.com/t3dotgg/59a521d2ee8d70aaf90e280c175072af). Hand it to your agent and it will walk you through it. Early apologies if it gets you banned 💀 After you set up a hub, T3 Code can show its pooled limits under Usage. [Connect a hub](./usage.md#connect-a-cliproxyapi-hub)
-
-## Can I use an API key or OpenRouter instead of a subscription?
-
-Yes. Add another provider instance in Settings and give it its own keys and endpoint. Claude has a full OpenRouter recipe. Your subscription setup stays untouched. [OpenRouter](./providers-claude.md#openrouter) · [Provider instances](./install.md#providers)
-
-## Does T3 Code support local models?
-
-No. T3 Code is a serious developer tool. Locally runnable models are not capable of meaningful engineering work.
-
-## Does my code go to T3 servers?
-
-No. Your code and prompts go from your machine to your provider (Anthropic, OpenAI, etc.), not to us. With T3 Connect, traffic rides a Cloudflare tunnel (`cloudflared` on your machine). Our relay sets up the link. It does not proxy your HTTP or WebSocket sessions. T3 Code does send basic product usage events (provider, model, token totals, that kind of thing). No prompts, no file contents. That is the same on Tailscale, LAN, or T3 Connect. Set `T3CODE_TELEMETRY_ENABLED=false` if you want it off. [Product usage data](./telemetry.md)
-
-## Worktrees are eating my disk. How do I clean them up?
-
-Open **Settings → Worktrees → Cleanup** and turn on automatic worktree cleanup. You can also run it now from there. Worktrees add up fast. One user cleared 500 GB. [Storage cleanup](./project-settings.md#storage-cleanup)
-
-## Is there voice input?
-
-Yes. On iPhone and Android, dictation uses on-device speech by default; you can opt in to a paired environment instead. Web and desktop require you to choose an environment first. The transcript goes into your draft for review. See [Voice input](./voice-input.md).
-
-## Does it work on Windows, Mac, and Linux?
-
-Yes, all three. Desktop app, CLI, the works. One catch: there is no `t3` binary for Intel Macs, so use the desktop app there. Windows folks can also run agents inside WSL. [Install](./install.md)
-
-## Why is my provider not showing up?
-
-Almost always, the CLI is not installed or not on the `PATH` of the machine that runs the server. (Not your phone. The computer.) Log in on that machine first, like `codex login` or `claude auth login`. Still missing? Point **Binary path** at it in provider settings. Version managers love to cause this one. [Provider setup](./install.md#providers)
+Your selected provider receives what its agent sends; review that provider's privacy and subscription terms. Remote access or optional integrations add connections you configure. This fork makes no guarantee about third-party terms or provider data handling. Report security problems through [private vulnerability reporting](../../.github/SECURITY.md).

@@ -8,6 +8,7 @@ import {
   collectServerUpdateTargets,
   describeUpdateCapsule,
   describeUpdateEverything,
+  partitionExowattServerUpdateTargets,
   runUpdateEverything,
   type UpdateEverythingMachine,
 } from "./updateEverything.logic";
@@ -44,6 +45,33 @@ function machine(
     ...overrides,
   };
 }
+
+describe("partitionExowattServerUpdateTargets", () => {
+  it("keeps only desktop-managed servers so no P3 server is offered an npm t3 update", () => {
+    const { targets } = collectServerUpdateTargets(
+      [
+        machine("service", "0.0.40", "boot-service"),
+        machine("respawn", "0.0.40", "respawn"),
+        machine("desktop", "0.0.40", "desktop-managed"),
+      ],
+      "0.0.50",
+    );
+    const partition = partitionExowattServerUpdateTargets(targets);
+    expect(partition.targets.map((target) => target.serverLabel)).toEqual(["desktop"]);
+    expect(partition.skipped).toEqual([
+      {
+        environmentId: EnvironmentId.make("service"),
+        label: "service",
+        reason: "P3 servers update from the P3 Code desktop app",
+      },
+      {
+        environmentId: EnvironmentId.make("respawn"),
+        label: "respawn",
+        reason: "P3 servers update from the P3 Code desktop app",
+      },
+    ]);
+  });
+});
 
 describe("collectServerUpdateTargets", () => {
   it("updates remote servers that can move to the target and names every skipped one", () => {

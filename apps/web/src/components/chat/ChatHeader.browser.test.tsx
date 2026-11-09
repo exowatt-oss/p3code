@@ -33,6 +33,7 @@ function header(title: string) {
         isServerThread
         activeProject={null}
         parentThreadLink={null}
+        latestWorkspaceState={null}
         onOpenThread={() => {}}
         rightPanelOpen={false}
         onNewThreadInProject={() => {}}

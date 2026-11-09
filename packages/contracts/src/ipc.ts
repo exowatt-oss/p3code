@@ -20,6 +20,11 @@ import type {
   DesktopAppActivationRequest,
   DesktopAppActivationResponse,
 } from "./desktopAppActivation.ts";
+import type {
+  ExowattPushDevServerResult,
+  ExowattRemoteServerEvent,
+  ExowattRemoteStockServerStopResult,
+} from "./exowatt.ts";
 
 export interface ContextMenuItem<T extends string = string> {
   id: T;
@@ -413,6 +418,8 @@ export interface DesktopSshEnvironmentBootstrap {
   pairingToken: string | null;
   remotePort?: number;
   remoteServerKind?: "external" | "managed";
+  /** exowatt: this desktop's server as the remote reaches it over the tunnel's reverse forward. */
+  reverseHttpBaseUrl?: string;
 }
 
 export const DesktopSshEnvironmentBootstrapSchema = Schema.Struct({
@@ -422,6 +429,7 @@ export const DesktopSshEnvironmentBootstrapSchema = Schema.Struct({
   pairingToken: Schema.NullOr(Schema.String),
   remotePort: Schema.optionalKey(Schema.Number),
   remoteServerKind: Schema.optionalKey(Schema.Literals(["external", "managed"])),
+  reverseHttpBaseUrl: Schema.optionalKey(Schema.String),
 });
 
 export interface DesktopSshPasswordPromptRequest {
@@ -1093,6 +1101,18 @@ export interface DesktopBridge {
   fetchSshSessionState: (httpBaseUrl: string, bearerToken: string) => Promise<AuthSessionState>;
   onSshPasswordPrompt: (listener: (request: DesktopSshPasswordPromptRequest) => void) => () => void;
   resolveSshPasswordPrompt: (requestId: string, password: string | null) => Promise<void>;
+  // Exowatt: stops upstream's stock T3 server/service on a remote so P3 can start its own.
+  exowattStopRemoteStockServer?: (
+    target: DesktopSshEnvironmentTarget,
+  ) => Promise<ExowattRemoteStockServerStopResult>;
+  // Exowatt: reveals the desktop app's local log directory in the OS file manager.
+  exowattOpenLogsDirectory?: () => Promise<boolean>;
+  // Exowatt: background remote server upgrades report here (toast).
+  onExowattRemoteServerEvent?: (listener: (event: ExowattRemoteServerEvent) => void) => () => void;
+  // Exowatt (dev builds only): install the worktree's packed server on a remote.
+  exowattPushDevServer?: (
+    target: DesktopSshEnvironmentTarget,
+  ) => Promise<ExowattPushDevServerResult>;
   getServerExposureState: () => Promise<DesktopServerExposureState>;
   setServerExposureMode: (mode: DesktopServerExposureMode) => Promise<DesktopServerExposureState>;
   setTailscaleServeEnabled: (input: {
@@ -1122,6 +1142,8 @@ export interface DesktopBridge {
   probeRemoteEditors: () => Promise<readonly EditorId[]>;
   pasteAsText: () => Promise<void>;
   onMenuAction: (listener: (action: string) => void) => () => void;
+  /** exowatt: mouse back/forward commands from the desktop shell. */
+  onNavigationHistory?: (listener: (direction: "back" | "forward") => void) => () => void;
   onSnapShotEvent: (listener: (event: DesktopSnapShotEvent) => void) => () => void;
   onQuitShortcut: (listener: (event: QuitShortcutHintEvent) => void) => () => void;
   getWindowFullscreenState: () => boolean;
@@ -1152,6 +1174,8 @@ export interface DesktopBridge {
     complete: (response: DesktopAppActivationResponse) => Promise<void>;
     onRequest: (listener: (request: DesktopAppActivationRequest) => void) => () => void;
   };
+  /** exowatt: relaunch the desktop shell. Optional for older shells and browser clients. */
+  restartApplication?: () => Promise<void>;
   preview: DesktopPreviewBridge;
 }
 

@@ -25,8 +25,8 @@ import {
 } from "./settings.ts";
 
 const decodeClientSettings = Schema.decodeUnknownSync(ClientSettingsSchema);
-const decodeClientSettingsPatch = Schema.decodeUnknownSync(ClientSettingsPatch);
 const encodeClientSettings = Schema.encodeSync(ClientSettingsSchema);
+const decodeClientSettingsPatch = Schema.decodeUnknownSync(ClientSettingsPatch);
 const decodeServerSettings = Schema.decodeUnknownSync(ServerSettings);
 const encodeProviderInstanceEnvironment = Schema.encodeSync(ProviderInstanceEnvironment);
 const decodeProviderInstanceEnvironment = Schema.decodeSync(ProviderInstanceEnvironment);
@@ -40,6 +40,35 @@ const decodeServerSettingsPatch = Schema.decodeUnknownSync(ServerSettingsPatch);
 const encodeServerSettings = Schema.encodeSync(ServerSettings);
 const encodeServerSettingsPatch = Schema.encodeSync(ServerSettingsPatch);
 const decodeClaudeSettings = Schema.decodeUnknownSync(ClaudeSettings);
+
+describe("ServerSettings response streaming", () => {
+  // exowatt: P3 keeps token streaming and makes it the default.
+  it("defaults to token streaming", () => {
+    expect(decodeServerSettings({}).responseStreamingMode).toBe("token");
+  });
+
+  it.each(["turn", "paragraph", "token"])(
+    "round-trips %s as an environment setting and project override",
+    (responseStreamingMode) => {
+      const input = {
+        responseStreamingMode,
+        projectSettingsOverrides: { project: { responseStreamingMode } },
+      };
+      expect(encodeServerSettings(decodeServerSettings(input))).toMatchObject(input);
+      expect(decodeServerSettingsPatch(input)).toEqual(input);
+    },
+  );
+
+  it.each(["unsupported"])("rejects %s in settings snapshots and writes", (mode) => {
+    for (const input of [
+      { responseStreamingMode: mode },
+      { projectSettingsOverrides: { project: { responseStreamingMode: mode } } },
+    ]) {
+      expect(() => decodeServerSettings(input)).toThrow();
+      expect(() => decodeServerSettingsPatch(input)).toThrow();
+    }
+  });
+});
 
 describe("storage cleanup settings", () => {
   it("keeps cleanup disabled for existing installations", () => {
@@ -324,6 +353,196 @@ describe("ClientSettings quit confirmation", () => {
   });
 });
 
+describe("ClientSettings sidebar (P3)", () => {
+  it("no longer honours a persisted legacy sidebar opt-in (P3 ships the default sidebar only)", () => {
+    expect(decodeClientSettings({ legacySidebarEnabled: true }).legacySidebarEnabled).toBe(false);
+  });
+
+  // exowatt: upstream defaults the Working shelf on (3de45c6254); it would bypass P3's saved sort.
+  it("keeps the Working shelf off by default and patchable", () => {
+    expect(decodeClientSettings({}).sidebarWorkingShelfEnabled).toBe(false);
+    expect(
+      decodeClientSettings({ sidebarWorkingShelfEnabled: true }).sidebarWorkingShelfEnabled,
+    ).toBe(true);
+    expect(
+      decodeClientSettingsPatch({ sidebarWorkingShelfEnabled: true }).sidebarWorkingShelfEnabled,
+    ).toBe(true);
+  });
+});
+
+describe("ClientSettings upstream 0.1.3 keys in the P3 patch", () => {
+  it("decodes the math and browser search keys in client settings and patches", () => {
+    const defaults = decodeClientSettings({});
+    expect(defaults.mathRenderingEnabled).toBe(false);
+    expect(defaults.browserSearchEngine).toBe("duckduckgo");
+    // The retired redesign switch still decodes from older settings (ignored).
+    expect(decodeClientSettings({ redesignEnabled: false })).not.toHaveProperty("redesignEnabled");
+    const patch = {
+      mathRenderingEnabled: true,
+      browserSearchEngine: "custom",
+      browserCustomSearchUrl: "https://search.example/?q=%s",
+    };
+    expect(decodeClientSettingsPatch(patch)).toEqual(patch);
+  });
+});
+
+describe("ClientSettings context window meter", () => {
+  it("follows upstream's switch and ignores P3's retired opt-out", () => {
+    expect(decodeClientSettings({}).contextWindowMeterEnabled).toBe(false);
+    expect(
+      decodeClientSettings({ contextWindowMeterEnabled: true }).contextWindowMeterEnabled,
+    ).toBe(true);
+    expect(decodeClientSettings({ "exowatt.contextWindowMeterHidden": true })).not.toHaveProperty(
+      "exowatt.contextWindowMeterHidden",
+    );
+  });
+});
+
+describe("ClientSettings retired Orchestrator tab", () => {
+  it("still decodes settings a build with the tab saved, without its keys", () => {
+    const settings = decodeClientSettings({
+      "exowatt.orchestratorTab": true,
+      "exowatt.orchestratorThread": { environmentId: "env", threadId: "thread" },
+      "exowatt.sidebarSort": "name",
+    });
+    expect(settings).not.toHaveProperty("exowatt.orchestratorTab");
+    expect(settings).not.toHaveProperty("exowatt.orchestratorThread");
+    expect(settings["exowatt.sidebarSort"]).toBe("name");
+  });
+});
+
+describe("ClientSettings Exowatt customization", () => {
+  it("defaults to the P3 visual profile", () => {
+    const settings = decodeClientSettings({});
+
+    expect(settings["exowatt.accent"]).toBe("default");
+    expect(settings["exowatt.newThreadSunrise"]).toBe(true);
+    expect(settings["exowatt.statusLightBlink"]).toBe("standard");
+    expect(settings["exowatt.sidebarDensity"]).toBe("compact");
+    expect(settings["exowatt.sidebarSort"]).toBe("activity");
+    expect(settings["exowatt.sidebarSortReversed"]).toBe(false);
+    expect(settings["exowatt.sidebarGroupByProject"]).toBe(false);
+    expect(settings["exowatt.workspaceStateCallouts"]).toBe(true);
+    expect(settings["exowatt.sidebarNestDispatched"]).toBe(false);
+    expect(settings["exowatt.sidebarProjectSort"]).toBe("activity");
+  });
+
+  it("accepts every section order for the grouped default sidebar", () => {
+    for (const order of ["activity", "created_at", "name", "manual"] as const) {
+      expect(
+        decodeClientSettingsPatch({ "exowatt.sidebarProjectSort": order })[
+          "exowatt.sidebarProjectSort"
+        ],
+      ).toBe(order);
+    }
+    expect(() => decodeClientSettingsPatch({ "exowatt.sidebarProjectSort": "size" })).toThrow();
+  });
+
+  it("decodes every customization key through the persisted client schema", () => {
+    const patch = decodeClientSettingsPatch({
+      "exowatt.accent": "ocean",
+      "exowatt.newThreadSunrise": false,
+      "exowatt.statusLightBlink": "subtle",
+      "exowatt.sidebarDensity": "compact",
+      "exowatt.sidebarSort": "status",
+      "exowatt.sidebarNestDispatched": true,
+      "exowatt.workspaceStateCallouts": false,
+    });
+
+    expect(patch).toEqual({
+      "exowatt.accent": "ocean",
+      "exowatt.newThreadSunrise": false,
+      "exowatt.statusLightBlink": "subtle",
+      "exowatt.sidebarDensity": "compact",
+      "exowatt.sidebarSort": "status",
+      "exowatt.sidebarNestDispatched": true,
+      "exowatt.workspaceStateCallouts": false,
+    });
+  });
+
+  it("drops the retired exowatt.theme key so persisted settings keep decoding", () => {
+    // Theme lives in the upstream appearance preference (useTheme); the
+    // Customize page used to persist a parallel copy that fought it.
+    const settings = decodeClientSettings({ "exowatt.theme": "dark" });
+
+    expect(settings).not.toHaveProperty("exowatt.theme");
+    expect(decodeClientSettingsPatch({ "exowatt.theme": "dark" })).not.toHaveProperty(
+      "exowatt.theme",
+    );
+  });
+
+  it("drops the removed Orchestrator tab keys so persisted settings keep decoding", () => {
+    const retired = {
+      "exowatt.orchestratorTab": true,
+      "exowatt.orchestratorThread": { environmentId: "env", threadId: "thread" },
+    };
+    expect(decodeClientSettings(retired)).not.toHaveProperty("exowatt.orchestratorTab");
+    expect(decodeClientSettingsPatch(retired)).not.toHaveProperty("exowatt.orchestratorThread");
+  });
+
+  it("rejects unsupported Exowatt customization values", () => {
+    expect(() => decodeClientSettingsPatch({ "exowatt.statusLightBlink": "maximum" })).toThrow();
+    expect(() => decodeClientSettingsPatch({ "exowatt.sidebarSort": "alphabetical" })).toThrow();
+  });
+
+  // P3's own dictation is gone (upstream's environment voice input replaces it).
+  it("still decodes settings saved with the retired P3 dictation keys", () => {
+    const settings = decodeClientSettings({
+      "exowatt.voiceTranscriptionEngine": "local",
+      "exowatt.localVoiceModel": "phonon-2",
+      "exowatt.voiceLivePreview": false,
+    });
+    expect(settings).not.toHaveProperty("exowatt.voiceTranscriptionEngine");
+    expect(settings).not.toHaveProperty("exowatt.localVoiceModel");
+    expect(settings).not.toHaveProperty("exowatt.voiceLivePreview");
+  });
+
+  it("carries the retired sidebar header sort key over to exowatt.sidebarSort once", () => {
+    const migrated = decodeClientSettings({ exowattSidebarThreadSortMode: "name" });
+    expect(migrated["exowatt.sidebarSort"]).toBe("name");
+    expect(migrated).not.toHaveProperty("exowattSidebarThreadSortMode");
+
+    const bothPresent = decodeClientSettings({
+      exowattSidebarThreadSortMode: "name",
+      "exowatt.sidebarSort": "status",
+    });
+    expect(bothPresent["exowatt.sidebarSort"]).toBe("status");
+  });
+
+  it("carries the retired header group-by key over to exowatt.sidebarGroupByProject", () => {
+    expect(decodeClientSettings({})["exowatt.sidebarGroupByProject"]).toBe(false);
+    const migrated = decodeClientSettings({ exowattSidebarThreadGroupByProject: true });
+    expect(migrated["exowatt.sidebarGroupByProject"]).toBe(true);
+    expect(migrated).not.toHaveProperty("exowattSidebarThreadGroupByProject");
+    expect(
+      decodeClientSettings({
+        exowattSidebarThreadGroupByProject: true,
+        "exowatt.sidebarGroupByProject": false,
+      })["exowatt.sidebarGroupByProject"],
+    ).toBe(false);
+  });
+
+  it("retires the legacy sidebar opt-in and keeps that layout project-grouped", () => {
+    const migrated = decodeClientSettings({ legacySidebarEnabled: true });
+    expect(migrated.legacySidebarEnabled).toBe(false);
+    expect(migrated["exowatt.sidebarGroupByProject"]).toBe(true);
+
+    // An explicit grouping choice for the default sidebar wins over the
+    // legacy-derived default, so re-reading an unflushed file stays idempotent.
+    const alreadyChosen = decodeClientSettings({
+      legacySidebarEnabled: true,
+      "exowatt.sidebarGroupByProject": false,
+    });
+    expect(alreadyChosen.legacySidebarEnabled).toBe(false);
+    expect(alreadyChosen["exowatt.sidebarGroupByProject"]).toBe(false);
+
+    // Users who never opted into legacy keep upstream's flat stream.
+    expect(
+      decodeClientSettings({ legacySidebarEnabled: false })["exowatt.sidebarGroupByProject"],
+    ).toBe(false);
+  });
+});
+
 describe("provider enabled defaults", () => {
   it("resolves instance enabled state with explicit false winning", () => {
     const grok = ProviderDriverKind.make("grok");
@@ -455,6 +674,28 @@ describe("ServerSettings project overrides across versions", () => {
       defaultAutoPull: false,
       addedByNewerServer: { mode: "kept" },
     });
+  });
+});
+
+describe("remote health-check timeout", () => {
+  it("defaults new settings to five seconds", () => {
+    expect(decodeClientSettings({}).remoteHealthCheckTimeoutSeconds).toBe(5);
+  });
+
+  it.each([1, 2, 5, 10, 30])("round-trips %s seconds", (value) => {
+    const settings = decodeClientSettings({ remoteHealthCheckTimeoutSeconds: value });
+    expect(
+      decodeClientSettings(encodeClientSettings(settings)).remoteHealthCheckTimeoutSeconds,
+    ).toBe(value);
+    expect(
+      decodeClientSettingsPatch({ remoteHealthCheckTimeoutSeconds: value })
+        .remoteHealthCheckTimeoutSeconds,
+    ).toBe(value);
+  });
+
+  it.each([0, -1, 1.5, 3, 60, "5", null])("rejects unsupported timeout %s", (value) => {
+    expect(() => decodeClientSettings({ remoteHealthCheckTimeoutSeconds: value })).toThrow();
+    expect(() => decodeClientSettingsPatch({ remoteHealthCheckTimeoutSeconds: value })).toThrow();
   });
 });
 

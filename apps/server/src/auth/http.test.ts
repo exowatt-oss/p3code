@@ -191,3 +191,83 @@ it.effect.each(["DPoP", "dpop"])("challenges a refused %s request with DPoP", (s
     );
   }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
+
+it.effect("answers 403 to a linked environment's session outside /mcp", () =>
+  Effect.gen(function* () {
+    const random = yield* SecureRandom.SecureRandom;
+    const unusedSecretStore = ServerSecretStore.ServerSecretStore.of({
+      get: () => Effect.succeedNone,
+      set: () => Effect.void,
+      create: () => Effect.void,
+      getOrCreateRandom: () => Effect.die("Not used by these routes."),
+      remove: () => Effect.void,
+    });
+    const requestContext = Context.make(SecureRandom.SecureRandom, random).pipe(
+      Context.add(ServerSecretStore.ServerSecretStore, unusedSecretStore),
+    );
+    return yield* Effect.acquireUseRelease(
+      Effect.sync(() => HttpRouter.toWebHandler(layerRoutes, { disableLogger: true })),
+      (environment) =>
+        Effect.promise(async () => {
+          const devResponse = await environment.handler(
+            postJson("/api/auth/browser-session", { credential: DEV_TOKEN }),
+            requestContext,
+          );
+          const devCookie = devResponse.headers
+            .getSetCookie()
+            .find((cookie) => cookie.startsWith("t3_dev_session_"))
+            ?.split(";", 1)[0];
+          const bearerFor = async (label: string) => {
+            const pairing = await environment.handler(
+              postJson(
+                "/api/auth/pairing-token",
+                { label, scopes: ["orchestration:read", "orchestration:operate"] },
+                { cookie: devCookie ?? "" },
+              ),
+              requestContext,
+            );
+            expect(pairing.status).toBe(200);
+            const { credential } = (await pairing.json()) as { credential: string };
+            const exchanged = await environment.handler(
+              new Request("http://127.0.0.1/oauth/token", {
+                method: "POST",
+                body: new URLSearchParams({
+                  grant_type: AuthTokenExchangeGrantType,
+                  subject_token: credential,
+                  subject_token_type: AuthEnvironmentBootstrapTokenType,
+                  requested_token_type: AuthAccessTokenType,
+                  scope: "orchestration:read orchestration:operate",
+                }),
+              }),
+              requestContext,
+            );
+            expect(exchanged.status).toBe(200);
+            return ((await exchanged.json()) as { access_token: string }).access_token;
+          };
+          const call = (token: string, path: string) =>
+            environment.handler(
+              new Request(`http://127.0.0.1${path}`, {
+                method: "POST",
+                headers: { authorization: `Bearer ${token}` },
+              }),
+              requestContext,
+            );
+
+          const peer = await bearerFor("p3-peer:Mac (env-mac)");
+          // Upstream dropped `GET /api/auth/clients`; the ticket routes still authenticate.
+          for (const path of ["/api/auth/websocket-ticket", "/api/auth/websocket-ticket/rpc"]) {
+            const refused = await call(peer, path);
+            expect(refused.status).toBe(403);
+            expect(await refused.json()).toMatchObject({
+              code: "operation_forbidden",
+              reason: "peer_session_mcp_only",
+            });
+          }
+
+          const agent = await bearerFor("agent token");
+          expect((await call(agent, "/api/auth/websocket-ticket")).status).toBe(200);
+        }),
+      (environment) => Effect.promise(() => environment.dispose()),
+    );
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+);

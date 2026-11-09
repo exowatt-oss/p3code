@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import type { ManagedPolicyDocument } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Deferred from "effect/Deferred";
@@ -19,6 +20,7 @@ import * as ServerConfig from "../config.ts";
 import * as DesktopAppUpdate from "../desktopUpdate/DesktopAppUpdate.ts";
 import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as ProcessRunner from "../processRunner.ts";
+import { EXOWATT_P3_SERVER_ENV } from "./exowattP3Server.ts";
 import * as ServiceLauncherClient from "./serviceLauncherClient.ts";
 import { SERVICE_LAUNCHER_PROTOCOL } from "./serviceProtocol.ts";
 import * as ServerSelfUpdate from "./selfUpdate.ts";
@@ -254,6 +256,22 @@ it.layer(NodeServices.layer)("server self update", (it) => {
       expect(result).toEqual({ targetVersion: "1.2.0", method: "desktop-app" });
       expect(stages).toEqual(["downloading", "installing"]);
       expect(order).toEqual([]);
+    }),
+  );
+
+  // Exowatt: the P3 server the desktop installed must never be replaced by stock t3.
+  it.effect("refuses to self-update a P3 server before staging anything", () =>
+    Effect.gen(function* () {
+      const { selfUpdate, order } = yield* makeHarness();
+      vi.stubEnv(EXOWATT_P3_SERVER_ENV, "1");
+      const error = yield* selfUpdate
+        .update({ targetVersion: "1.1.0" })
+        .pipe(Effect.flip, Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs())));
+      expect(error.reason).toContain("P3 Code server");
+      expect(error.reason).toContain("t3@1.1.0");
+      expect(order).toEqual([]);
+      // The next update on the same instance still works: the guard is per call.
+      expect((yield* selfUpdate.update({ targetVersion: "1.1.0" })).updateId).toBe("launcher-id");
     }),
   );
 

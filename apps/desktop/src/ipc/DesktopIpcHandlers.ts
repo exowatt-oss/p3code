@@ -16,6 +16,11 @@ import {
   setServerExposureMode,
   setTailscaleServeEnabled,
 } from "./methods/serverExposure.ts";
+import { exowattOpenLogsDirectory } from "./methods/exowattLogs.ts";
+import {
+  exowattPushDevServer,
+  exowattStopRemoteStockServer,
+} from "./methods/exowattRemoteServer.ts";
 import {
   bootstrapSshBearerSession,
   disconnectSshEnvironment,
@@ -31,6 +36,7 @@ import {
   downloadUpdate,
   getUpdateState,
   installUpdate,
+  restartApplication,
   setUpdateChannel,
 } from "./methods/updates.ts";
 import {
@@ -128,6 +134,9 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(fetchSshEnvironmentDescriptor);
   yield* ipc.handle(bootstrapSshBearerSession);
   yield* ipc.handle(fetchSshSessionState);
+  yield* ipc.handle(exowattStopRemoteStockServer);
+  yield* ipc.handle(exowattPushDevServer);
+  yield* ipc.handle(exowattOpenLogsDirectory);
   yield* ipc.handle(resolveSshPasswordPrompt);
 
   yield* ipc.handle(getServerExposureState);
@@ -162,6 +171,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(getCliCommandState);
   yield* ipc.handle(installCliCommand);
   yield* ipc.handle(uninstallCliCommand);
+  yield* ipc.handle(restartApplication);
   for (const previewMethod of PreviewIpc.methods) {
     // Explicit types preserve the error/service union of these heterogeneous preview methods.
     yield* ipc.handle<

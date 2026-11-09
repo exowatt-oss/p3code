@@ -1,7 +1,6 @@
 import "vite-plus/test/config";
 import { defineConfig } from "vite-plus";
 import * as NodeURL from "node:url";
-import { remoteCacheUrl } from "./infra/task-cache/src/remoteCache.ts";
 import { cachedTestTasks } from "./scripts/lib/cached-tests.ts";
 
 const TEST_EXCLUDE = [
@@ -79,7 +78,7 @@ const RESTRICTED_PULL_REQUEST_GLYPH_IMPORTS = {
 };
 
 // Vite+ supports remote configuration before its published types include it.
-const cacheUrl = remoteCacheUrl(import.meta.dirname);
+const cacheUrl = null;
 const taskCacheConfig = {
   scripts: false,
   ...(cacheUrl ? { remote: { url: cacheUrl } } : {}),
@@ -91,7 +90,7 @@ export default defineConfig({
     tasks: {
       ...cachedTestTasks(process.env.T3_CACHED_TESTS),
       // The two knip passes read the same files and write nothing, so they run side by side.
-      // The `knip:check` script runs this task, so `vp run knip:check` and `pnpm run knip:check` both use it.
+      // The full audit is opt-in for the standalone fork; the commit gate checks files and dependencies while retained public exports are reconciled.
       "knip:check:all": {
         command: 'node -e ""',
         dependsOn: ["knip:check:files", "knip:check:exports"],
@@ -104,6 +103,7 @@ export default defineConfig({
       "~": NodeURL.fileURLToPath(new URL("./apps/web/src", import.meta.url)),
     },
   },
+  assetsInclude: ["**/*.wasm", "**/*.wasm?inline"],
   test: {
     environment: "node",
     // Fixture subprocesses must not inherit the outer task runner’s cache policy.
@@ -350,6 +350,8 @@ export default defineConfig({
       {
         files: [
           "apps/web/src/components/settings/AuthorizedClientsSettings.tsx",
+          // exowatt: reads `AuthClientSession.client.label` to find earlier peer-link sessions.
+          "apps/web/src/components/desktop/peerEnvironmentLinks.ts",
           "apps/mobile/src/features/updates/app-updates.ts",
           "apps/web/src/components/device/DevicePhoneViewport.tsx",
           "apps/web/src/components/device/DeviceDuoViewport.tsx",
@@ -611,6 +613,24 @@ export default defineConfig({
         },
       },
       {
+        // exowatt: the pets panel and sprite are vendored from upstream pets and
+        // keep their own pixel-art styling; restyling them would fork the vendor copy.
+        files: ["apps/web/src/components/exowatt-pets/vendor/**"],
+        rules: {
+          "shadcn/no-arbitrary-values": "off",
+          "shadcn/no-raw-colors": "off",
+          "shadcn/no-restyle": "off",
+          "shadcn/no-unknown-classes": "off",
+          "shadcn/require-static-classes": "off",
+          // The vendored hooks keep their own memoization and animation refs; the
+          // React Compiler skips what it cannot compile, as it did before.
+          "react/exhaustive-effect-dependencies": "off",
+          "react/refs": "off",
+          "react/set-state-in-effect": "off",
+          "t3code/no-manual-memo": "off",
+        },
+      },
+      {
         // ESNext types allow APIs absent from Hermes; restrict shared client code, exempting Node tests.
         files: [
           "apps/mobile/src/**",
@@ -629,6 +649,14 @@ export default defineConfig({
       {
         files: ["apps/web/src/**", "apps/mobile/src/**", "packages/*/src/**"],
         rules: { "t3code/no-unreasoned-state-sync": "error" },
+      },
+      {
+        // exowatt: vendored pets stay an unforked copy; this sits after the effect rule so it wins.
+        files: ["apps/web/src/components/exowatt-pets/vendor/**"],
+        rules: {
+          "t3code/no-unreasoned-state-sync": "off",
+          "t3code/no-test-timeout-or-unreasoned-skip": "off",
+        },
       },
       {
         // React Compiler caches use* functions only if they call a hook.

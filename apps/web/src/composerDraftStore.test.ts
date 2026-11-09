@@ -41,6 +41,7 @@ const CODEX_INSTANCE = ProviderInstanceId.make("codex");
 const CODEX_SECONDARY_INSTANCE = ProviderInstanceId.make("codex_secondary");
 const CLAUDE_AGENT_INSTANCE = ProviderInstanceId.make("claudeAgent");
 const CURSOR_INSTANCE = ProviderInstanceId.make("cursor");
+const PHI_INSTANCE = ProviderInstanceId.make("phi");
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
 const CLAUDE_AGENT_DRIVER = ProviderDriverKind.make("claudeAgent");
 const CURSOR_DRIVER = ProviderDriverKind.make("cursor");
@@ -80,7 +81,9 @@ import {
   deriveEffectiveComposerModelState,
   clearComposerDraftsEnvironment,
   beginBackgroundDraftSubmissionByRef,
+  beginOptimisticComposerModelSelection,
   clearBackgroundDraftSubmissionByRef,
+  readEffectiveComposerModelState,
   finalizePromotedDraftThreadByRef,
   markPromotedDraftThreadByRef,
   resolveDraftPromotionNavigationTarget,
@@ -1540,6 +1543,52 @@ describe("composerDraftStore modelSelection", () => {
     resetComposerDraftStore();
   });
 
+  // exowatt: send-time reads see a selection made moments before sending.
+  it("reads a just-picked model from the store without waiting for a render", () => {
+    const store = useComposerDraftStore.getState();
+    const previousSelection = createModelSelection(PHI_INSTANCE, "anthropic/claude-sonnet");
+    store.setModelSelection(
+      threadRef,
+      createModelSelection(PHI_INSTANCE, "anthropic/claude-sol-5-1"),
+      {
+        explicit: true,
+      },
+    );
+
+    const sendState = readEffectiveComposerModelState({
+      threadRef,
+      providers: [
+        {
+          instanceId: PHI_INSTANCE,
+          driver: ProviderDriverKind.make("phi"),
+          enabled: true,
+          installed: true,
+          version: null,
+          status: "ready",
+          auth: { status: "authenticated" },
+          checkedAt: "2026-01-01T00:00:00.000Z",
+          models: [
+            {
+              slug: "anthropic/claude-sol-5-1",
+              name: "Sol",
+              isCustom: false,
+              capabilities: {},
+            },
+          ],
+          slashCommands: [],
+          skills: [],
+        },
+      ],
+      selectedProvider: ProviderDriverKind.make("phi"),
+      selectedInstanceId: PHI_INSTANCE,
+      threadModelSelection: previousSelection,
+      projectModelSelection: null,
+      settings: DEFAULT_UNIFIED_SETTINGS,
+    });
+
+    expect(sendState.selectedModel).toBe("anthropic/claude-sol-5-1");
+  });
+
   it("retains a pick matching cached state until the live shell confirms it", () => {
     const h = modelReconciliationHarness(TEST_ENVIRONMENT_ID, threadId, "cached");
     const pick = h.model();
@@ -1630,7 +1679,22 @@ describe("composerDraftStore modelSelection", () => {
     h.update({ modelSelection: primary });
     const fallback = deriveEffectiveComposerModelState({
       draft: before,
-      providers: [],
+      // exowatt: P3's default driver is Phi, so the primary needs a Codex snapshot to resolve.
+      providers: [
+        {
+          instanceId: CODEX_INSTANCE,
+          driver: CODEX_DRIVER,
+          enabled: true,
+          installed: true,
+          version: null,
+          status: "ready",
+          auth: { status: "authenticated" },
+          checkedAt: "2026-01-01T00:00:00.000Z",
+          models: [{ slug: DEFAULT_MODEL, name: DEFAULT_MODEL, isCustom: false, capabilities: {} }],
+          slashCommands: [],
+          skills: [],
+        },
+      ],
       selectedProvider: CODEX_DRIVER,
       selectedInstanceId: CODEX_INSTANCE,
       threadModelSelection: h.model(),
@@ -1847,6 +1911,110 @@ describe("composerDraftStore per-model sticky options", () => {
     expect(mergedState.stickyOptionsByModelByProvider).toEqual({
       [CODEX_INSTANCE]: { "gpt-5.3-codex": [{ id: "reasoningEffort", value: "low" }] },
     });
+  });
+});
+
+describe("composerDraftStore live model selection", () => {
+  const threadId = ThreadId.make("thread-live-model");
+  const threadRef = scopeThreadRef(TEST_ENVIRONMENT_ID, threadId);
+
+  beforeEach(() => resetComposerDraftStore());
+
+  it("commits the latest choice and does not roll it back for an older failed RPC", () => {
+    const first = beginOptimisticComposerModelSelection(
+      threadRef,
+      modelSelection(CODEX_DRIVER, "first-model"),
+    );
+    const second = beginOptimisticComposerModelSelection(
+      threadRef,
+      modelSelection(CODEX_DRIVER, "second-model"),
+    );
+    first.rollback();
+    second.commit();
+    expect(
+      draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider[CODEX_INSTANCE],
+    ).toEqual(modelSelection(CODEX_DRIVER, "second-model"));
+    expect(useComposerDraftStore.getState().stickyModelSelectionByProvider[CODEX_INSTANCE]).toEqual(
+      modelSelection(CODEX_DRIVER, "second-model"),
+    );
+  });
+
+  it("promotes an earlier successful pick when a later live RPC fails", () => {
+    const first = beginOptimisticComposerModelSelection(
+      threadRef,
+      modelSelection(CODEX_DRIVER, "first-model"),
+    );
+    const second = beginOptimisticComposerModelSelection(
+      threadRef,
+      modelSelection(CODEX_DRIVER, "second-model"),
+    );
+    first.commit();
+    second.rollback();
+    expect(
+      draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider[CODEX_INSTANCE],
+    ).toEqual(modelSelection(CODEX_DRIVER, "first-model"));
+    expect(useComposerDraftStore.getState().stickyModelSelectionByProvider[CODEX_INSTANCE]).toEqual(
+      modelSelection(CODEX_DRIVER, "first-model"),
+    );
+  });
+
+  it("does not restore a rejected predecessor when two rapid picks both fail", () => {
+    useComposerDraftStore
+      .getState()
+      .setModelSelection(threadRef, modelSelection(CODEX_DRIVER, "initial-model"));
+    const first = beginOptimisticComposerModelSelection(
+      threadRef,
+      modelSelection(CODEX_DRIVER, "first-model"),
+    );
+    const second = beginOptimisticComposerModelSelection(
+      threadRef,
+      modelSelection(CODEX_DRIVER, "second-model"),
+    );
+    first.rollback();
+    second.rollback();
+    expect(
+      draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider[CODEX_INSTANCE],
+    ).toEqual(modelSelection(CODEX_DRIVER, "initial-model"));
+  });
+
+  it("restores the last confirmed model after two newer picks fail", () => {
+    const first = beginOptimisticComposerModelSelection(
+      threadRef,
+      modelSelection(CODEX_DRIVER, "confirmed-model"),
+    );
+    const second = beginOptimisticComposerModelSelection(
+      threadRef,
+      modelSelection(CODEX_DRIVER, "rejected-model"),
+    );
+    const third = beginOptimisticComposerModelSelection(
+      threadRef,
+      modelSelection(CODEX_DRIVER, "also-rejected-model"),
+    );
+    first.commit();
+    second.rollback();
+    third.rollback();
+    expect(
+      draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider[CODEX_INSTANCE],
+    ).toEqual(modelSelection(CODEX_DRIVER, "confirmed-model"));
+    expect(useComposerDraftStore.getState().stickyModelSelectionByProvider[CODEX_INSTANCE]).toEqual(
+      modelSelection(CODEX_DRIVER, "confirmed-model"),
+    );
+  });
+
+  it("restores the previous choice if the live request fails", () => {
+    useComposerDraftStore
+      .getState()
+      .setModelSelection(threadRef, modelSelection(CODEX_DRIVER, "previous-model"), {
+        explicit: true,
+      });
+    const optimistic = beginOptimisticComposerModelSelection(
+      threadRef,
+      modelSelection(CODEX_DRIVER, "new-model"),
+    );
+    optimistic.rollback();
+    expect(
+      draftFor(threadId, TEST_ENVIRONMENT_ID)?.modelSelectionByProvider[CODEX_INSTANCE],
+    ).toEqual(modelSelection(CODEX_DRIVER, "previous-model"));
   });
 });
 

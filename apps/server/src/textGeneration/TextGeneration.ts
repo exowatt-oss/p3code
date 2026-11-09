@@ -31,6 +31,8 @@ export type {
   PrContentGenerationResult,
   ReviewGuideGenerationInput,
   ReviewGuideGenerationResult,
+  ThreadIconGenerationInput,
+  ThreadIconGenerationResult,
   ThreadTitleGenerationInput,
   ThreadTitleGenerationResult,
   TranscriptionPostProcessingInput,
@@ -47,7 +49,8 @@ type TextGenerationOp =
   | "generateBranchName"
   | "generateThreadTitle"
   | "generateReviewGuide"
-  | "generateTranscriptionPostProcessing";
+  | "generateTranscriptionPostProcessing"
+  | "generateThreadIcon";
 
 const resolveInstance = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
@@ -182,6 +185,22 @@ export const make = Effect.gen(function* () {
               modelSelection,
             });
           }),
+      );
+    }),
+    // exowatt: thread icons, with the same usage fallback as the other operations.
+    generateThreadIcon: Effect.fn("TextGeneration.generateThreadIcon")(function (input) {
+      return generate(
+        "generateThreadIcon",
+        input.modelSelection,
+        (textGeneration, modelSelection) =>
+          textGeneration.generateThreadIcon
+            ? textGeneration.generateThreadIcon({ ...input, modelSelection })
+            : Effect.fail(
+                new TextGenerationError({
+                  operation: "generateThreadIcon",
+                  detail: `Provider instance '${modelSelection.instanceId}' cannot pick thread icons.`,
+                }),
+              ),
       );
     }),
   });

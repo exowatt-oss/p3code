@@ -1,5 +1,5 @@
 import {
-  ClientSettingsSchema,
+  ClientSettingsFields,
   type ClientSettingsPatch,
   type EnvironmentId,
   globalIdleCompaction,
@@ -38,8 +38,16 @@ interface ScopedSettingsEnvironment {
 }
 
 const SERVER_KEYS = new Set<string>(Object.keys(ServerSettings.fields));
-const CLIENT_KEYS = new Set<string>(Object.keys(ClientSettingsSchema.fields));
+// P3 wraps the client settings struct in a migrating decodeTo, so the key
+// list comes from the underlying fields struct.
+const CLIENT_KEYS = new Set<string>(Object.keys(ClientSettingsFields.fields));
 const PROJECT_SCOPED_KEYS = new Set<string>(PROJECT_SCOPED_SERVER_SETTING_KEYS);
+// Exowatt: grants other environments' agents access to one server, so it is never fanned out.
+const SINGLE_ENVIRONMENT_KEYS = new Set<string>(["exowattPeerInbound"]);
+
+function isSingleEnvironmentSettingKey(key: string): boolean {
+  return SINGLE_ENVIRONMENT_KEYS.has(key);
+}
 
 export function isProjectScopedSettingKey(key: string): key is ProjectScopedServerSettingKey {
   return PROJECT_SCOPED_KEYS.has(key);
@@ -234,8 +242,10 @@ export function planScopedSettingsPatch(
   const unscopableKeys = isProjectScope
     ? serverKeys.filter((key) => !isProjectScopedSettingKey(key))
     : [];
+  const needsOneEnvironment =
+    scope.kind !== "environment" && serverKeys.some(isSingleEnvironmentSettingKey);
   const serverWrites: ScopedServerWrite[] =
-    serverKeys.length === 0
+    serverKeys.length === 0 || needsOneEnvironment
       ? []
       : isProjectScope
         ? unscopableKeys.length > 0
@@ -326,11 +336,13 @@ export function planScopedSettingsPatch(
       ? null
       : scope.kind === "unavailable"
         ? scope.message
-        : unscopableKeys.length > 0
-          ? "This setting is environment-wide and cannot be overridden by a project."
-          : isProjectScope
-            ? "Connect the selected checkouts, or update their environments, to save a project override."
-            : `Connect ${scope.kind === "environment" ? scope.label : "an environment"} to save this setting.`;
+        : needsOneEnvironment
+          ? "Choose one environment to change this setting."
+          : unscopableKeys.length > 0
+            ? "This setting is environment-wide and cannot be overridden by a project."
+            : isProjectScope
+              ? "Connect the selected checkouts, or update their environments, to save a project override."
+              : `Connect ${scope.kind === "environment" ? scope.label : "an environment"} to save this setting.`;
   return { clientPatch, hasClientWrite, serverWrites, unavailableReason };
 }
 
@@ -475,7 +487,7 @@ export async function persistScopedSettingsPatch(
       return [
         {
           ...environment,
-          message: "This environment does not support this setting. Update T3 Code on it.",
+          message: "This environment does not support this setting. Update P3 Code on it.",
         },
       ];
     }

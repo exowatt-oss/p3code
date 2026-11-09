@@ -304,6 +304,17 @@ function makeLocalCommandHarness(input: {
     readonly switchedProvider?: boolean;
     readonly threadRuntimeMode?: OrchestrationV2ThreadProjection["thread"]["runtimeMode"];
   };
+  readonly switchFailure?: unknown;
+  readonly worktree?: {
+    readonly path: string;
+    readonly branch: string | null;
+    readonly refName: string | null;
+    readonly isRepo?: boolean;
+    readonly hasWorkingTreeChanges?: boolean;
+    readonly branches?: ReadonlyArray<string>;
+    readonly headCommitSha?: string;
+    readonly branchCommitSha?: string;
+  };
 }) {
   const settledRuns: Array<string> = [];
   const now = DateTime.makeUnsafe("2026-09-04T12:00:00Z");
@@ -371,8 +382,13 @@ function makeLocalCommandHarness(input: {
       id: threadId,
       activeProviderThreadId: providerThreadId,
       projectId: ProjectId.make("project-native-account-command"),
-      branch: input.worktreePath === undefined ? null : "feature/restore",
-      worktreePath: input.worktreePath ?? null,
+      branch:
+        input.worktree !== undefined
+          ? input.worktree.branch
+          : input.worktreePath === undefined
+            ? null
+            : "feature/restore",
+      worktreePath: input.worktree?.path ?? input.worktreePath ?? null,
       lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
     } as OrchestrationV2ThreadProjection["thread"],
     runs: [
@@ -854,6 +870,46 @@ function makeLocalCommandHarness(input: {
         )
       : Effect.void,
   );
+  // Without a worktree fixture the checkout sits on its recorded branch, so
+  // the detached-HEAD preflight passes straight through.
+  let checkedOutBranch =
+    input.worktree !== undefined
+      ? input.worktree.refName
+      : input.worktreePath === undefined
+        ? null
+        : "feature/restore";
+  const localStatus = vi.fn(() =>
+    Effect.succeed({
+      isRepo: input.worktree?.isRepo ?? true,
+      hasPrimaryRemote: false,
+      isDefaultRef: false,
+      refName: checkedOutBranch,
+      hasWorkingTreeChanges: input.worktree?.hasWorkingTreeChanges ?? false,
+      workingTree: { files: [], insertions: 0, deletions: 0 },
+    } as never),
+  );
+  const invalidateLocalStatus = vi.fn(() => Effect.void);
+  const listLocalBranchNames = vi.fn(() =>
+    Effect.succeed([
+      ...(input.worktree?.branches ?? (input.worktree === undefined ? ["feature/restore"] : [])),
+    ]),
+  );
+  const resolveCommit = vi.fn(({ revision }: { readonly revision: string }) =>
+    Effect.succeed({
+      commitSha:
+        revision === "HEAD"
+          ? (input.worktree?.headCommitSha ?? "shared-commit")
+          : (input.worktree?.branchCommitSha ?? "shared-commit"),
+    }),
+  );
+  const reattachDetachedHead = vi.fn(({ refName }: { readonly refName: string }) =>
+    input.switchFailure === undefined
+      ? Effect.sync(() => {
+          checkedOutBranch = refName;
+          return { refName };
+        })
+      : Effect.fail(input.switchFailure as never),
+  );
   const tryHandlePromptCommand = vi.fn(() =>
     input.logoutFailure === undefined
       ? Effect.succeed(true)
@@ -948,8 +1004,12 @@ function makeLocalCommandHarness(input: {
         input.gitWorkflow === undefined
           ? Layer.mock(GitWorkflow.GitWorkflowService)({
               pruneWorktrees: () => Effect.void,
-              listLocalBranchNames: () => Effect.succeed(["feature/restore"]),
               createWorktree,
+              invalidateLocalStatus,
+              localStatus,
+              listLocalBranchNames,
+              resolveCommit,
+              reattachDetachedHead,
             })
           : Layer.succeed(GitWorkflow.GitWorkflowService, input.gitWorkflow),
         Layer.mock(ProjectService.ProjectService)({
@@ -1022,6 +1082,11 @@ function makeLocalCommandHarness(input: {
     startTurn,
     forkThread,
     interruptTurn,
+    localStatus,
+    invalidateLocalStatus,
+    listLocalBranchNames,
+    resolveCommit,
+    reattachDetachedHead,
     tryHandlePromptCommand,
     events,
     oldInstanceId,
@@ -1230,7 +1295,9 @@ effectIt.effect(
         {
           type: "error",
           failure: {
-            message: `Could not recreate the worktree for branch 'feature/restore' at ${worktreePath}.`,
+            // exowatt: client failure messages redact paths, explicit messages included.
+            message:
+              "Could not recreate the worktree for branch 'feature/restore' at [REDACTED_PATH].",
           },
         },
       ]);
@@ -1621,6 +1688,252 @@ effectIt.effect("starts another provider in the same checkout while a turn is pe
     yield* Deferred.succeed(releaseTurn, undefined);
     yield* Fiber.join(pending);
   }),
+);
+
+effectIt.effect(
+  "reattaches a clean detached worktree to its recorded local branch before resume",
+  () =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        worktree: {
+          path: "/tmp/resume-worktree",
+          branch: "feature/resume",
+          refName: null,
+          branches: ["feature/resume"],
+        },
+        openFailure: new Error("provider session rejected"),
+      });
+
+      yield* harness.start;
+
+      expect(harness.reattachDetachedHead).toHaveBeenCalledExactlyOnceWith({
+        cwd: "/tmp/resume-worktree",
+        refName: "feature/resume",
+        expectedSha: "shared-commit",
+      });
+      expect(harness.resolveCommit).toHaveBeenCalledWith({
+        cwd: "/tmp/resume-worktree",
+        revision: "refs/heads/feature/resume",
+      });
+      expect(harness.localStatus).toHaveBeenCalledTimes(2);
+      expect(harness.invalidateLocalStatus).toHaveBeenCalledTimes(2);
+      expect(harness.open).toHaveBeenCalledOnce();
+    }),
+);
+
+effectIt.effect("starts a Scratch thread in a non-Git folder with no recorded branch", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      worktree: { path: "/tmp/scratch-thread", branch: null, refName: null, isRepo: false },
+      openFailure: new Error("provider session rejected"),
+    });
+    yield* harness.start;
+    expect(harness.open).toHaveBeenCalledOnce();
+    expect(harness.reattachDetachedHead).not.toHaveBeenCalled();
+  }),
+);
+
+effectIt.effect("does not guess a branch for a detached worktree without recorded intent", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      worktree: {
+        path: "/tmp/unrecorded-branch-worktree",
+        branch: null,
+        refName: null,
+      },
+      openFailure: new Error("provider session rejected"),
+    });
+
+    yield* harness.start;
+
+    expect(harness.reattachDetachedHead).not.toHaveBeenCalled();
+    expect(harness.open).not.toHaveBeenCalled();
+    const failure = harness.projection().turnItems.at(-1);
+    if (failure?.type === "error") {
+      expect(failure.failure.message).toContain("no recorded branch to restore");
+      expect(failure.failure.message).not.toContain("/tmp/unrecorded-branch-worktree");
+    } else {
+      throw new Error("Expected a failed worktree preflight error item.");
+    }
+  }),
+);
+
+effectIt.effect("does not reattach a dirty detached worktree", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      worktree: {
+        path: "/tmp/dirty-resume-worktree",
+        branch: "feature/resume",
+        refName: null,
+        hasWorkingTreeChanges: true,
+        branches: ["feature/resume"],
+      },
+      openFailure: new Error("provider session rejected"),
+    });
+
+    yield* harness.start;
+
+    expect(harness.reattachDetachedHead).not.toHaveBeenCalled();
+    expect(harness.open).not.toHaveBeenCalled();
+    expect(harness.projection().runs.at(-1)).toMatchObject({ status: "failed" });
+    const failure = harness.projection().turnItems.at(-1);
+    expect(failure).toMatchObject({
+      type: "error",
+      title: "Provider worktree could not be resumed",
+    });
+    if (failure?.type === "error") {
+      expect(failure.failure.message).toContain('expects branch "feature/resume"');
+      expect(failure.failure.message).toContain("detached with uncommitted changes");
+      expect(failure.failure.message).not.toContain("/tmp/dirty-resume-worktree");
+    }
+  }),
+);
+
+effectIt.effect("does not override a worktree checked out on a different branch", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      worktree: {
+        path: "/tmp/switched-resume-worktree",
+        branch: "feature/resume",
+        refName: "feature/manual-change",
+        branches: ["feature/resume", "feature/manual-change"],
+      },
+      openFailure: new Error("provider session rejected"),
+    });
+
+    yield* harness.start;
+
+    expect(harness.reattachDetachedHead).not.toHaveBeenCalled();
+    expect(harness.open).not.toHaveBeenCalled();
+    const failure = harness.projection().turnItems.at(-1);
+    if (failure?.type === "error") {
+      expect(failure.failure.message).toContain('expects branch "feature/resume"');
+      expect(failure.failure.message).toContain('worktree is on "feature/manual-change"');
+      expect(failure.failure.message).not.toContain("/tmp/switched-resume-worktree");
+    } else {
+      throw new Error("Expected a failed worktree preflight error item.");
+    }
+  }),
+);
+
+effectIt.effect("does not reattach a detached HEAD that differs from its recorded branch tip", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      worktree: {
+        path: "/tmp/diverged-resume-worktree",
+        branch: "feature/resume",
+        refName: null,
+        branches: ["feature/resume"],
+        headCommitSha: "detached-commit",
+        branchCommitSha: "branch-tip",
+      },
+      openFailure: new Error("provider session rejected"),
+    });
+
+    yield* harness.start;
+
+    expect(harness.resolveCommit).toHaveBeenCalledTimes(2);
+    expect(harness.reattachDetachedHead).not.toHaveBeenCalled();
+    expect(harness.open).not.toHaveBeenCalled();
+    const failure = harness.projection().turnItems.at(-1);
+    if (failure?.type === "error") {
+      expect(failure.failure.message).toContain('expects branch "feature/resume" at branch-tip');
+      expect(failure.failure.message).toContain("detached HEAD is detached-commit");
+      expect(failure.failure.message).toContain("avoid losing detached work");
+      expect(failure.failure.message).not.toContain("/tmp/diverged-resume-worktree");
+    } else {
+      throw new Error("Expected a failed worktree preflight error item.");
+    }
+  }),
+);
+
+effectIt.effect("does not launch when a detached worktree cannot be safely reattached", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      worktree: {
+        path: "/tmp/occupied-branch-worktree",
+        branch: "feature/resume",
+        refName: null,
+        branches: ["feature/resume"],
+      },
+      switchFailure: new Error("branch is already checked out by another worktree"),
+      openFailure: new Error("provider session rejected"),
+    });
+
+    yield* harness.start;
+
+    expect(harness.reattachDetachedHead).toHaveBeenCalledOnce();
+    expect(harness.open).not.toHaveBeenCalled();
+    const failure = harness.projection().turnItems.at(-1);
+    if (failure?.type === "error") {
+      expect(failure.failure.message).toContain("could not be safely reattached");
+      expect(failure.failure.message).not.toContain("/tmp/occupied-branch-worktree");
+    } else {
+      throw new Error("Expected a failed worktree preflight error item.");
+    }
+  }),
+);
+
+effectIt.effect("reports a recoverable detached commit without exposing the Git path", () =>
+  Effect.gen(function* () {
+    const originalSha = "a".repeat(40);
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      worktree: {
+        path: "/tmp/private-reattach-worktree",
+        branch: "feature/resume",
+        refName: null,
+        branches: ["feature/resume"],
+      },
+      switchFailure: {
+        detail: `HEAD moved again during reattachment; original detached commit ${originalSha} is in the Git reflog.`,
+        cwd: "/tmp/private-reattach-worktree",
+      },
+    });
+    yield* harness.start;
+    const failure = harness.projection().turnItems.at(-1);
+    if (failure?.type !== "error") throw new Error("Expected failed worktree preflight.");
+    expect(failure.failure.message).toContain(originalSha);
+    expect(failure.failure.message).toContain("HEAD reflog");
+    expect(failure.failure.message).not.toContain("/tmp/private-reattach-worktree");
+  }),
+);
+
+effectIt.effect(
+  "does not create a missing recorded branch while recovering a detached worktree",
+  () =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        worktree: {
+          path: "/tmp/missing-branch-worktree",
+          branch: "feature/resume",
+          refName: null,
+          branches: ["main"],
+        },
+        openFailure: new Error("provider session rejected"),
+      });
+
+      yield* harness.start;
+
+      expect(harness.reattachDetachedHead).not.toHaveBeenCalled();
+      expect(harness.open).not.toHaveBeenCalled();
+      const failure = harness.projection().turnItems.at(-1);
+      if (failure?.type === "error") {
+        expect(failure.failure.message).toContain("recorded branch");
+        expect(failure.failure.message).toContain('"feature/resume"');
+        expect(failure.failure.message).not.toContain("/tmp/missing-branch-worktree");
+      } else {
+        throw new Error("Expected a failed worktree preflight error item.");
+      }
+    }),
 );
 
 effectIt.effect("terminalizes a starting run when its provider session cannot open", () =>

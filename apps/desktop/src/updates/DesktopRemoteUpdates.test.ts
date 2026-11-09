@@ -948,4 +948,24 @@ describe("DesktopRemoteUpdates", () => {
       }),
     );
   });
+
+  it.effect("fails fast with the disabled reason when updates are off", () => {
+    const harness = makeHarness({ env: { P3CODE_DISABLE_AUTO_UPDATE: "true" } });
+
+    return runRemoteUpdatesTest(harness, ({ reports, requests }) =>
+      Effect.gen(function* () {
+        yield* Queue.offer(requests, request("req-3"));
+        yield* settle;
+
+        const terminals = terminalReports(reports);
+        assert.equal(terminals.length, 1);
+        assert.equal(terminals[0]?.outcome, "failed");
+        assert.equal(
+          terminals[0]?.reason,
+          "P3 Code updates are disabled by the P3CODE_DISABLE_AUTO_UPDATE emergency setting.",
+        );
+        assert.equal(harness.quitAndInstalls(), 0);
+      }),
+    );
+  });
 });

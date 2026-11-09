@@ -19,6 +19,10 @@
       "types": "./src/errors.ts",
       "import": "./src/errors.ts"
     },
+    "./exowattRemoteServer": {
+      "types": "./src/exowattRemoteServer.ts",
+      "import": "./src/exowattRemoteServer.ts"
+    },
     "./tunnel": {
       "types": "./src/tunnel.ts",
       "import": "./src/tunnel.ts"

@@ -1,6 +1,10 @@
 import { ORCHESTRATION_PROTOCOL_HEADER } from "@t3tools/contracts";
 
-export const browserApiCorsAllowedMethods = ["GET", "POST", "OPTIONS"] as const;
+// Exowatt: the peer-environments routes (PUT upsert, DELETE remove) are called
+// cross-origin from the desktop renderer, so the preflight must allow them too.
+// These endpoints still require an `access:write` bearer, so widening the allowed
+// methods doesn't let an arbitrary origin act without a valid credential.
+export const browserApiCorsAllowedMethods = ["GET", "POST", "PUT", "DELETE", "OPTIONS"] as const;
 export const browserApiCorsAllowedHeaders = [
   "authorization",
   "b3",

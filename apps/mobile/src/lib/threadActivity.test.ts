@@ -57,6 +57,32 @@ it("shows a captured MCP app for a failed deferred write", () => {
   expect(buildThreadFeed([projected(item, 0)])).toMatchObject([{ type: "mcp-app", app: mcpApp }]);
 });
 
+it("shows Phi workspace hand-backs with open items without cluttering empty ones", () => {
+  const state: OrchestrationV2TurnItem = {
+    ...base("phi-state", "2026-09-04T12:00:00.000Z", 1),
+    type: "workspace_state",
+    payload: {
+      endState: "mid-work",
+      openItems: ["Finish the rollout"],
+      feadsEpic: "ex-123",
+      recordedAt: "2026-09-04T12:00:00.000Z",
+    },
+  };
+  const activity = buildThreadFeed([projected(state, 0)]).flatMap((entry) =>
+    entry.type === "activity-group" ? entry.activities : [],
+  )[0];
+  expect(activity?.summary).toBe("Session state: mid work");
+  expect(activity?.detail).toContain("Finish the rollout");
+  expect(
+    buildThreadFeed([
+      projected(
+        { ...state, payload: { ...state.payload, openItems: [], feadsEpic: undefined } },
+        0,
+      ),
+    ]),
+  ).toEqual([]);
+});
+
 it("keeps historical plan detail accessible from its paged turn item", () => {
   const item = {
     ...base("historical-plan", "2026-08-29T00:00:00.000Z", 1),

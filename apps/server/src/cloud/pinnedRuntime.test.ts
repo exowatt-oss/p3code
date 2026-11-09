@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import * as Deferred from "effect/Deferred";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -14,6 +15,7 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as ProcessRunner from "../processRunner.ts";
+import { EXOWATT_P3_SERVER_ENV } from "./exowattP3Server.ts";
 import {
   ensurePinnedRuntimeInstalled,
   isUnpublishedRelease,
@@ -622,5 +624,59 @@ it.layer(NodeServices.layer)("prunePinnedRuntimes", (it) => {
         );
         assert.deepEqual(removed, ["1.1.0"]);
       }),
+  );
+
+  // Exowatt: a P3 server refuses stock `t3` installs even over an existing runtime.
+  it.effect("refuses to install or reuse stock t3 when running as the P3 server", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const baseDir = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pinned-runtime-p3-" });
+      const finalPaths = pinnedRuntimePaths(path, baseDir, "1.2.3", "linux");
+      yield* fs.makeDirectory(path.dirname(finalPaths.entryPath), { recursive: true });
+      yield* fs.writeFileString(finalPaths.entryPath, "export {};\n");
+      yield* fs.writeFileString(finalPaths.sentinelPath, "1.2.3\n");
+      let npmRuns = 0;
+      let validations = 0;
+      const runner = ProcessRunner.ProcessRunner.of({
+        run: () =>
+          Effect.sync(() => {
+            npmRuns += 1;
+            return {
+              stdout: "",
+              stderr: "",
+              code: ChildProcessSpawner.ExitCode(0),
+              timedOut: false,
+              stdoutTruncated: false,
+              stderrTruncated: false,
+              stdoutInvalidUtf8: false,
+              stderrInvalidUtf8: false,
+            };
+          }),
+      });
+
+      vi.stubEnv(EXOWATT_P3_SERVER_ENV, "1");
+      const error = yield* ensurePinnedRuntimeInstalled({
+        baseDir,
+        version: "1.2.3",
+        fs,
+        path,
+        platform: "linux",
+        arch: "x64",
+        // The refusal fires before any download; a fetch here would be a bug.
+        httpClient: HttpClient.make(() => Effect.die("must not download when refused")),
+        runner,
+        validate: () =>
+          Effect.sync(() => {
+            validations += 1;
+          }),
+      }).pipe(Effect.flip, Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs())));
+
+      assert.equal(error._tag, "PinnedRuntimeInstallError");
+      assert.include(error.message, "P3 Code server");
+      assert.include(error.message, "t3@1.2.3");
+      assert.equal(npmRuns, 0);
+      assert.equal(validations, 0);
+    }),
   );
 });

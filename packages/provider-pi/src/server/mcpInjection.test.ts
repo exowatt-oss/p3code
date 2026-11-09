@@ -1,5 +1,11 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, expect, it } from "@effect/vitest";
 import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
+import * as NodePath from "effect/Path";
 
 import {
   T3_MCP_BEARER_ENV,
@@ -7,15 +13,12 @@ import {
   T3_PI_RUNTIME_MODE_ENV,
   T3_PI_MCP_EXTENSION_PATH_ENV,
 } from "./mcpExtensionSource.ts";
-import * as Effect from "effect/Effect";
-import * as Fiber from "effect/Fiber";
-import * as Option from "effect/Option";
-import * as NodePath from "effect/Path";
-import * as NodeFS from "effect/FileSystem";
-import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   buildPiRpcLaunch,
   materializePiT3McpExtension,
+  PHI_HELPER_MCP_CONFIG_PATH,
+  PHI_MCP_BROWSER_AUTH_ENV,
+  PHI_MCP_CONFIG_ENV,
   resolvePiLaunchArgs,
 } from "./mcpInjection.ts";
 import { PI_T3_MCP_EXTENSION_SOURCE } from "./mcpExtensionSource.ts";
@@ -97,6 +100,19 @@ describe("pi T3 MCP injection", () => {
     );
   });
 
+  it("falls back to auto-accept-edits, never approval-required, for a stray auto mode", () => {
+    const launch = buildPiRpcLaunch({
+      launchArgs: [],
+      environment: {},
+      mcpSession: undefined,
+      extensionPath: "/tmp/cache/pi-t3-mcp-extension.ts",
+      runtimeMode: "auto",
+    });
+
+    // exowatt: Pi has no "auto" mode; a literal "auto" reaching launch must not prompt on every tool.
+    assert.equal(launch.env[T3_PI_RUNTIME_MODE_ENV], "auto-accept-edits");
+  });
+
   it("forces tools and user extensions off for unattended text generation", () => {
     const launch = buildPiRpcLaunch({
       launchArgs: [
@@ -145,6 +161,61 @@ describe("pi T3 MCP injection", () => {
     assert.deepInclude(resolvePiLaunchArgs("--plan @instructions.md"), { ok: false });
   });
 
+  it("runs helper processes without MCP while sessions keep the user MCP config", () => {
+    const environment = {
+      [PHI_MCP_CONFIG_ENV]: "/home/user/mcp.json",
+      [PHI_MCP_BROWSER_AUTH_ENV]: "1",
+      [T3_MCP_URL_ENV]: "http://127.0.0.1:9999/stale",
+      [T3_MCP_BEARER_ENV]: "stale-token",
+    };
+    const helper = buildPiRpcLaunch({
+      launchArgs: [],
+      environment,
+      mcpSession: undefined,
+      extensionPath: undefined,
+      ephemeral: true,
+      disableExtensions: true,
+      disableMcp: true,
+    });
+    assert.equal(helper.env[PHI_MCP_CONFIG_ENV], PHI_HELPER_MCP_CONFIG_PATH);
+    assert.equal(helper.env[PHI_MCP_BROWSER_AUTH_ENV], "0");
+    assert.isUndefined(helper.env[T3_MCP_URL_ENV]);
+    assert.isUndefined(helper.env[T3_MCP_BEARER_ENV]);
+    // The fork helper persists a session, so MCP suppression cannot depend on --no-session.
+    const fork = buildPiRpcLaunch({
+      launchArgs: [],
+      environment,
+      mcpSession: undefined,
+      extensionPath: undefined,
+      disableExtensions: true,
+      disableTools: true,
+      disableMcp: true,
+    });
+    assert.notInclude(fork.args, "--no-session");
+    assert.equal(fork.env[PHI_MCP_CONFIG_ENV], PHI_HELPER_MCP_CONFIG_PATH);
+    assert.equal(fork.env[PHI_MCP_BROWSER_AUTH_ENV], "0");
+    const session = buildPiRpcLaunch({
+      launchArgs: [],
+      environment,
+      mcpSession,
+      extensionPath: "/tmp/cache/pi-t3-mcp-extension.ts",
+    });
+    assert.equal(session.env[PHI_MCP_CONFIG_ENV], "/home/user/mcp.json");
+    assert.equal(session.env[PHI_MCP_BROWSER_AUTH_ENV], "1");
+    assert.equal(session.env[T3_MCP_URL_ENV], mcpSession.endpoint);
+    assert.equal(session.env[T3_MCP_BEARER_ENV], "secret-pi-token");
+    assert.equal(environment[PHI_MCP_CONFIG_ENV], "/home/user/mcp.json");
+  });
+
+  it.effect("points helper processes at an MCP config path that can never be read", () =>
+    Effect.gen(function* () {
+      // Phi reads the config with readFile and treats any failure as "no servers".
+      const fs = yield* FileSystem.FileSystem;
+      const read = yield* Effect.exit(fs.readFileString(PHI_HELPER_MCP_CONFIG_PATH));
+      assert.isTrue(read._tag === "Failure");
+    }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
   it("rejects --provider without --model, which Pi 1.0 refuses at startup", () => {
     const rejection = {
       ok: false,
@@ -163,7 +234,7 @@ describe("materializePiT3McpExtension", () => {
   // the launch loads a broken extension.
   it.live("never exposes a torn extension file to a concurrent reader", () =>
     Effect.gen(function* () {
-      const fs = yield* NodeFS.FileSystem;
+      const fs = yield* FileSystem.FileSystem;
       const path = yield* NodePath.Path;
       const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-pi-atomic-" });
       const anomalies: Array<string> = [];

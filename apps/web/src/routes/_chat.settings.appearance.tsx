@@ -1,11 +1,8 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 
-import { AppearanceSettingsPanel } from "../components/settings/AppearanceSettingsPanel";
-
-function SettingsAppearanceRoute() {
-  return <AppearanceSettingsPanel />;
-}
-
+// exowatt: Appearance lives in Settings › Customize; keep old links and search anchors working.
 export const Route = createFileRoute("/_chat/settings/appearance")({
-  component: SettingsAppearanceRoute,
+  beforeLoad: ({ location }) => {
+    throw redirect({ to: "/settings/customize", hash: location.hash, replace: true });
+  },
 });

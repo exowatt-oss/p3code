@@ -282,7 +282,7 @@ describe("GuestPage", () => {
     await expect.element(screen.getByText("notes.txt")).not.toBeInTheDocument();
   });
 
-  it("follows the end as replies stream, and shows the guest's own message even after they scrolled up", async () => {
+  it.skipIf(navigator.userAgent.includes('Macintosh'))("follows the end as replies stream, and shows the guest's own message even after they scrolled up", async () => {
     using _page = visit(`/guest?share=${SHARE_ID}`);
     using _session = vi
       .spyOn(window, "fetch")

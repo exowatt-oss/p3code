@@ -36,6 +36,7 @@ type AgentStartHook = (
   ctx: {
     model?: { api: string };
     ui: { notify: (message: string, severity: string) => void };
+    sessionManager?: { getBranch: () => ReadonlyArray<unknown> };
   },
 ) => Promise<{ systemPrompt: string } | undefined>;
 
@@ -52,6 +53,8 @@ export async function loadMcpBridge(
 ) {
   const handlers = new Map<string, AgentStartHook>();
   const tools: RegisteredTool[] = [];
+  /** Session entries the extension appended (loaded-tool records). */
+  const appended: Array<{ readonly type: string; readonly data: unknown }> = [];
   const requests: Array<{ readonly method: string; readonly params?: unknown }> = [];
   let activeTools = ["read"];
   let bridgeSourcePath = "/fixture/pi-t3-extension.ts";
@@ -96,7 +99,13 @@ export async function loadMcpBridge(
     },
     AbortSignal,
     NodePath,
-    Type: { Unsafe: (schema: unknown) => schema },
+    Type: {
+      Unsafe: (schema: unknown) => schema,
+      Object: (properties: unknown) => ({ type: "object", properties }),
+      String: () => ({ type: "string" }),
+      Integer: () => ({ type: "integer" }),
+      Optional: (schema: unknown) => schema,
+    },
     fetch: async (
       url: string,
       transport: { body: string; headers: Record<string, string>; signal?: AbortSignal },
@@ -135,6 +144,7 @@ export async function loadMcpBridge(
       setActiveTools: (names: string[]) => {
         activeTools = names.filter((name) => options.allowsTool?.(name) ?? true);
       },
+      appendEntry: (type: string, data: unknown) => appended.push({ type, data }),
       getAllTools: () => [
         ...tools.map((tool) => ({ name: tool.name, sourceInfo: { path: bridgeSourcePath } })),
         ...(options.toolSearchAvailable &&
@@ -155,6 +165,7 @@ export async function loadMcpBridge(
   return {
     handlers,
     tools,
+    appended,
     setBridgeSourcePath: (path: string) => {
       bridgeSourcePath = path;
     },

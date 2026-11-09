@@ -42,6 +42,10 @@ const ServerObservabilitySettingsJson = fromLenientJson(
 const decodeServerObservabilitySettingsJson = Schema.decodeUnknownOption(
   ServerObservabilitySettingsJson,
 );
+// exowatt: likewise only the peer gate, so an unrelated bad value cannot reopen or close it.
+const decodeExowattPeerInboundJson = Schema.decodeUnknownOption(
+  fromLenientJson(Schema.Struct({ exowattPeerInbound: ServerSettings.fields.exowattPeerInbound })),
+);
 
 export function isModelSelectionProviderEnabled(
   settings: ServerSettings,
@@ -209,6 +213,14 @@ export function parsePersistedServerObservabilitySettings(
     return extractPersistedServerObservabilitySettings(decoded.value);
   }
   return { otlpTracesUrl: undefined, otlpMetricsUrl: undefined, otlpLogsUrl: undefined };
+}
+
+/** Exowatt: the persisted `exowattPeerInbound`; unreadable settings mean off. */
+export function parsePersistedExowattPeerInbound(
+  raw: string,
+): ServerSettings["exowattPeerInbound"] {
+  const decoded = decodeExowattPeerInboundJson(raw);
+  return Option.isSome(decoded) ? decoded.value.exowattPeerInbound : "off";
 }
 
 function shouldReplaceTextGenerationModelSelection(
@@ -637,6 +649,12 @@ export function applyServerSettingsPatch(
             usageModelAliasesPatch,
           ),
         }
+      : {}),
+    ...(patch.exowattClientSettingsPush !== undefined
+      ? { exowattClientSettingsPush: patch.exowattClientSettingsPush }
+      : {}),
+    ...(patch.exowattThreadFocusRequest !== undefined
+      ? { exowattThreadFocusRequest: patch.exowattThreadFocusRequest }
       : {}),
     ...(patch.sourceControlWriterModelSelection !== undefined
       ? { sourceControlWriterModelSelection: patch.sourceControlWriterModelSelection }

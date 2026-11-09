@@ -6,12 +6,13 @@ import * as Schema from "effect/Schema";
 
 import { hasCloudPublicConfig } from "~/cloud/publicConfig";
 import { useT3ConnectAuthPrompt } from "../clerk/useT3ConnectAuthPrompt";
+import { ExowattExperimentalSection } from "../exowatt-customize/ExowattAppearanceSections";
 import { Button } from "../ui/button";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
 import { ScopedSwitch } from "./ScopedSwitch";
 import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
-import { searchableSetting } from "./settingsSearch";
+import { EXOWATT_HIDDEN_SETTING_IDS, searchableSetting } from "./settingsSearch";
 import { LegacyFeaturesSection } from "./SettingsPanels";
 import { useScopedSettings, useUpdateScopedSettings } from "./useScopedSettings";
 import { useOptionalSettingsScope } from "./SettingsScopeContext";
@@ -25,11 +26,17 @@ export function LabsSettingsPanel() {
         <BoringSidebarRow />
         <BoringSidebarMultilineRow />
         <ToolCallVisibilityRow />
-        {/* Clerk is only mounted when this build has T3 Connect. */}
-        {hasCloudPublicConfig() ? <GuestLinksRowWithSignIn /> : <GuestLinksRow />}
+        {/* Clerk is only mounted when this build has T3 Connect. exowatt: guest links stay hidden. */}
+        {EXOWATT_HIDDEN_SETTING_IDS.has("guest-links") ? null : hasCloudPublicConfig() ? (
+          <GuestLinksRowWithSignIn />
+        ) : (
+          <GuestLinksRow />
+        )}
         <LinkedEnvironmentsRow />
         <SimlockHostsRow />
       </SettingsSection>
+      {/* exowatt: P3's experimental toggles (thread signals). */}
+      <ExowattExperimentalSection />
       <LegacyFeaturesSection />
     </SettingsPageContainer>
   );
@@ -231,7 +238,7 @@ function SimlockHostsRow() {
           <Link to="/settings/devices" className="underline underline-offset-2">
             Devices
           </Link>
-          . An alpha that may change or break. T3 Code never installs Simlock.
+          . An alpha that may change or break. P3 Code never installs Simlock.
         </>
       }
       control={

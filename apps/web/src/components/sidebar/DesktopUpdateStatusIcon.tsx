@@ -1,5 +1,11 @@
 import { RefreshIcon } from "~/components/ui/refresh-icon";
-import { CheckIcon, CircleArrowUpIcon, DownloadIcon, RotateCwIcon } from "lucide-react";
+import {
+  CheckIcon,
+  CircleArrowUpIcon,
+  DownloadIcon,
+  RotateCwIcon,
+  TriangleAlertIcon,
+} from "lucide-react";
 import type { AnimationEventHandler } from "react";
 
 const DOWNLOAD_PROGRESS_RADIUS = 14;
@@ -11,7 +17,8 @@ export type DesktopUpdateStatusIconState =
   | "available"
   | "downloading"
   | "downloaded"
-  | "everything";
+  | "everything"
+  | "error";
 
 function normalizeDesktopUpdateDownloadPercent(percent: number | null): number {
   if (percent === null || !Number.isFinite(percent)) return 0;
@@ -117,6 +124,7 @@ export function DesktopUpdateStatusIcon({
   }
   if (status === "downloaded") return <DesktopUpdateDownloadedIcon />;
   if (status === "everything") return <CircleArrowUpIcon className="size-4" />;
+  if (status === "error") return <TriangleAlertIcon className="size-4" />;
 
   return (
     <RefreshIcon

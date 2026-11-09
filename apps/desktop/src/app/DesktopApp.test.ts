@@ -118,6 +118,7 @@ it.effect.each([false, true])(
             installIntoProcess: Effect.succeed(true),
             awaitDiscovery: Effect.succeed(true),
             updates: Stream.empty,
+            harnessEnvironment: Effect.undefined,
           }),
           Effect.provideService(DesktopAppSettings.DesktopAppSettings, {
             load: Effect.void,

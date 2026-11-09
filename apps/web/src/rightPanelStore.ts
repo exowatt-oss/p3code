@@ -22,6 +22,8 @@ const RIGHT_PANEL_KINDS = [
   "pull-request",
   "pull-requests",
   "side-chat",
+  // exowatt: P3's Hub (agents, tasks, outputs, sources, connectors for the thread).
+  "hub",
 ] as const;
 export type RightPanelKind = (typeof RIGHT_PANEL_KINDS)[number];
 
@@ -76,10 +78,14 @@ export type RightPanelSurface =
       detailTab?: PullRequestDetailTab;
     }
   | { id: "pull-requests"; kind: "pull-requests" }
-  | { id: `side-chat:${string}`; kind: "side-chat"; threadId: ThreadId };
+  | { id: `side-chat:${string}`; kind: "side-chat"; threadId: ThreadId }
+  /** exowatt: the thread's Hub, derived on the client from v2 thread state. */
+  | { id: "hub"; kind: "hub" };
 
 const RIGHT_PANEL_STORAGE_KEY = "t3code:right-panel-state:v2";
-const RIGHT_PANEL_STORAGE_VERSION = 14;
+// exowatt: v15 re-runs upstream's v14 migration for P3 builds, whose own v14 persisted the
+// removed "agents" surface; their "hub" tabs and `openHubByDefault` carry over.
+const RIGHT_PANEL_STORAGE_VERSION = 15;
 
 export const PULL_REQUESTS_PANEL_REF = scopeThreadRef(
   EnvironmentId.make("pull-requests-panel"),
@@ -102,11 +108,22 @@ export interface ThreadPanelVisibility {
   popoverOpen: boolean;
 }
 
+/** exowatt: new threads start with the Hub collapsed unless the user opts in. */
+export const DEFAULT_OPEN_HUB_BY_DEFAULT = false;
+
 interface RightPanelStoreState {
   byThreadKey: Record<string, ThreadRightPanelState>;
   pendingMaximizeThreadKey: string | null;
   requestMaximize: (ref: ScopedThreadRef) => void;
   consumeMaximizeRequest: (ref: ScopedThreadRef) => boolean;
+  /** exowatt: open the Hub for a thread that has never had a panel. */
+  openHubByDefault: boolean;
+  setOpenHubByDefault: (value: boolean) => void;
+  /**
+   * exowatt: open the Hub on behalf of the app for a thread that has no panel
+   * state and no user panel choice yet. A no-op when `openHubByDefault` is off.
+   */
+  openDefaultSurface: (ref: ScopedThreadRef) => void;
   threadPanelVisibilityByThreadKey: Record<string, ThreadPanelVisibility>;
   userActionRevisionByThreadKey: Record<string, number>;
   closeRevisionByThreadKey: Record<string, number>;
@@ -219,6 +236,8 @@ const singletonSurface = (
       return { id: "pull-requests", kind };
     case "device":
       return { id: "device", kind };
+    case "hub":
+      return { id: "hub", kind };
   }
 };
 
@@ -472,6 +491,7 @@ function normalizeRevealLine(line: number | undefined): number | null {
 export function migratePersistedRightPanelState(persistedState: unknown): {
   byThreadKey: Record<string, ThreadRightPanelState>;
   threadPanelVisibilityByThreadKey: Record<string, ThreadPanelVisibility>;
+  openHubByDefault?: boolean;
 } {
   if (!persistedState || typeof persistedState !== "object") {
     return { byThreadKey: {}, threadPanelVisibilityByThreadKey: {} };
@@ -618,7 +638,16 @@ export function migratePersistedRightPanelState(persistedState: unknown): {
           }),
         )
       : {};
-  return { byThreadKey, threadPanelVisibilityByThreadKey };
+  // exowatt: keep P3's "Open Hub on new threads" choice across the bump.
+  const openHubByDefault =
+    "openHubByDefault" in persistedState && typeof persistedState.openHubByDefault === "boolean"
+      ? persistedState.openHubByDefault
+      : undefined;
+  return {
+    byThreadKey,
+    threadPanelVisibilityByThreadKey,
+    ...(openHubByDefault === undefined ? {} : { openHubByDefault }),
+  };
 }
 
 export const useRightPanelStore = create<RightPanelStoreState>()(
@@ -632,6 +661,23 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
         set({ pendingMaximizeThreadKey: null });
         return true;
       },
+      openHubByDefault: DEFAULT_OPEN_HUB_BY_DEFAULT,
+      setOpenHubByDefault: (value) =>
+        set((state) => (state.openHubByDefault === value ? state : { openHubByDefault: value })),
+      openDefaultSurface: (ref) =>
+        set((state) => {
+          if (!state.openHubByDefault) return state;
+          const threadKey = scopedThreadKey(ref);
+          if (
+            threadKey in state.byThreadKey ||
+            (state.userActionRevisionByThreadKey[threadKey] ?? 0) > 0
+          ) {
+            return state;
+          }
+          return automaticUpdate(state, threadKey, (current) =>
+            upsertSurface(current, singletonSurface("hub")),
+          );
+        }),
       threadPanelVisibilityByThreadKey: {},
       userActionRevisionByThreadKey: {},
       closeRevisionByThreadKey: {},
@@ -1163,6 +1209,7 @@ export const useRightPanelStore = create<RightPanelStoreState>()(
         resolveStorage(typeof window !== "undefined" ? window.localStorage : undefined),
       ),
       partialize: (state) => ({
+        openHubByDefault: state.openHubByDefault,
         byThreadKey: Object.fromEntries(
           Object.entries(state.byThreadKey).filter(
             ([threadKey]) => !isPullRequestsPanelKey(threadKey),

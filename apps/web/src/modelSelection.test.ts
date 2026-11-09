@@ -489,6 +489,7 @@ describe("instance-scoped model selection", () => {
             { id: "effort", value: "max" },
           ]),
         },
+        modelSelectionExplicit: true,
       },
       providers,
       selectedProvider: driver,
@@ -509,6 +510,40 @@ describe("instance-scoped model selection", () => {
     expect(dispatch.modelOptionsForDispatch).toBeUndefined();
   });
 
+  it("uses an optimistic picker draft before the thread projection catches up", () => {
+    const instanceId = ProviderInstanceId.make("phi");
+    const driver = ProviderDriverKind.make("phi");
+    const providers = [
+      provider({
+        provider: driver,
+        instanceId,
+        models: ["anthropic/claude-sonnet", "anthropic/claude-fable-5-1"],
+      }),
+    ];
+    const state = deriveEffectiveComposerModelState({
+      draft: {
+        activeProvider: instanceId,
+        modelSelectionByProvider: {
+          [instanceId]: createModelSelection(instanceId, "anthropic/claude-fable-5-1", [
+            { id: "thinkingLevel", value: "high" },
+          ]),
+        },
+        modelSelectionExplicit: true,
+      },
+      providers,
+      selectedProvider: driver,
+      selectedInstanceId: instanceId,
+      threadModelSelection: createModelSelection(instanceId, "anthropic/claude-sonnet"),
+      projectModelSelection: null,
+      settings: settingsWithProviderInstances(),
+    });
+
+    expect(state.selectedModel).toBe("anthropic/claude-fable-5-1");
+    expect(state.modelOptions).toEqual({
+      [instanceId]: [{ id: "thinkingLevel", value: "high" }],
+    });
+  });
+
   it("preserves an explicit draft OpenCode selection while the catalog is empty", () => {
     const instanceId = ProviderInstanceId.make("opencode_work");
     const driver = ProviderDriverKind.make("opencode");
@@ -521,6 +556,7 @@ describe("instance-scoped model selection", () => {
       draft: {
         activeProvider: instanceId,
         modelSelectionByProvider: { [instanceId]: draftSelection },
+        modelSelectionExplicit: true,
       },
       providers,
       selectedProvider: driver,
@@ -731,6 +767,7 @@ describe("instance-scoped model selection", () => {
       draft: {
         activeProvider: instanceId,
         modelSelectionByProvider: { [instanceId]: draftSelection },
+        modelSelectionExplicit: true,
       },
       providers,
       selectedProvider: driver,
@@ -848,6 +885,43 @@ describe("instance-scoped model selection", () => {
     expect(resolveAppModelSelectionState(settings, [unsupported])).toEqual(
       NO_PROVIDER_MODEL_SELECTION,
     );
+  });
+
+  // Regression: a draft's per-provider model memory must never override the thread's
+  // real selection unless it came from a genuine user pick in this draft. A sticky seed
+  // or rolled-back optimistic update can populate `modelSelectionByProvider`; the
+  // thread's own model/effort must survive that.
+  it("ignores a non-explicit draft model selection and keeps the thread's own model", () => {
+    const instanceId = ProviderInstanceId.make("phi");
+    const driver = ProviderDriverKind.make("phi");
+    const providers = [
+      provider({
+        provider: driver,
+        instanceId,
+        models: ["anthropic/claude-opus-5-5", "exowatt/luna"],
+      }),
+    ];
+    const threadSelection = createModelSelection(instanceId, "anthropic/claude-opus-5-5", [
+      { id: "thinkingLevel", value: "medium" },
+    ]);
+    // No `modelSelectionExplicit: true` here: this is exactly the shape a
+    // non-explicit write leaves behind.
+    const state = deriveEffectiveComposerModelState({
+      draft: {
+        activeProvider: instanceId,
+        modelSelectionByProvider: {
+          [instanceId]: createModelSelection(instanceId, "exowatt/luna"),
+        },
+      },
+      providers,
+      selectedProvider: driver,
+      selectedInstanceId: instanceId,
+      threadModelSelection: threadSelection,
+      projectModelSelection: null,
+      settings: settingsWithProviderInstances(),
+    });
+
+    expect(state.selectedModel).toBe("anthropic/claude-opus-5-5");
   });
 });
 

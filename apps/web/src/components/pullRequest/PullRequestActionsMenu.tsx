@@ -402,9 +402,6 @@ export function PullRequestActionsMenu({
         <MenuItem onClick={() => copyReference(detail.url, `${terminology.shortLabel} link`)}>
           <LinkIcon className="size-3.5" />
           Copy link
-          <MenuShortcut>
-            {shortcutLabelForCommand(keybindings, "thread.copyReference")}
-          </MenuShortcut>
         </MenuItem>
         <MenuItem
           onClick={() => copyReference(`#${reference.number}`, `${terminology.shortLabel} number`)}

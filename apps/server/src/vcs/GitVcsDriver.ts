@@ -443,6 +443,12 @@ export class GitVcsDriver extends Context.Service<
     readonly switchRef: (
       input: VcsSwitchRefInput,
     ) => Effect.Effect<VcsSwitchRefResult, GitCommandError>;
+    /** Attach a clean detached HEAD to its branch, verifying the commit and restoring it if the branch moves. */
+    readonly reattachDetachedHead: (input: {
+      readonly cwd: string;
+      readonly refName: string;
+      readonly expectedSha: string;
+    }) => Effect.Effect<{ readonly refName: string }, GitCommandError>;
     readonly initRepo: (input: VcsInitInput) => Effect.Effect<void, GitCommandError>;
     readonly listLocalBranchNames: (cwd: string) => Effect.Effect<string[], GitCommandError>;
   }

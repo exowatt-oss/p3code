@@ -2,6 +2,8 @@ import * as Migrator from "effect/sql/Migrator";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import { reconcileV2PreviewMigration } from "./reconcileV2PreviewMigration.ts";
+// exowatt: idempotent P3 schema repairs, applied after the migrator.
+import { applyExowattSchemaPatches } from "./ExowattSchemaPatches.ts";
 
 import Migration0001 from "./Migrations/001_OrchestrationEvents.ts";
 import Migration0002 from "./Migrations/002_OrchestrationCommandReceipts.ts";
@@ -258,5 +260,7 @@ export const runMigrations = Effect.fn("runMigrations")(function* ({
       "Database migration history diverges from this build; recorded migration ids are skipped, not reconciled by name.",
     ).pipe(Effect.annotateLogs({ divergent }));
   }
+  // exowatt: idempotent P3 schema repairs (see ExowattSchemaPatches.ts).
+  yield* applyExowattSchemaPatches();
   return executedMigrations;
 });

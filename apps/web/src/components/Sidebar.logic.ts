@@ -661,6 +661,7 @@ type ThreadStatusInput = Pick<
   | "hasPendingUserInput"
   | "pendingSubagentRequest"
   | "pendingGuestMessageCount"
+  | "hasAwaitingHumanHandback"
   | "interactionMode"
   | "latestRun"
   | "runtime"
@@ -854,6 +855,7 @@ type SidebarThreadStatusInput = Pick<
   | "hasPendingUserInput"
   | "pendingSubagentRequest"
   | "pendingGuestMessageCount"
+  | "hasAwaitingHumanHandback"
   | "runtime"
   | "blockedOnThreadWait"
 >;
@@ -862,7 +864,11 @@ export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): Si
   if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") {
     return "approval";
   }
-  if (thread.hasPendingUserInput || thread.pendingSubagentRequest === "user_input") {
+  if (
+    thread.hasPendingUserInput ||
+    thread.hasAwaitingHumanHandback ||
+    thread.pendingSubagentRequest === "user_input"
+  ) {
     return "input";
   }
   // A guest is waiting on the owner; the agent's own requests come first.
@@ -1102,7 +1108,11 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  if (thread.hasPendingUserInput || thread.pendingSubagentRequest === "user_input") {
+  if (
+    thread.hasPendingUserInput ||
+    thread.hasAwaitingHumanHandback ||
+    thread.pendingSubagentRequest === "user_input"
+  ) {
     return {
       label: "Awaiting Input",
       colorClass: "text-indigo-600 dark:text-indigo-300/90",
@@ -1168,6 +1178,7 @@ export function resolveThreadStatusPill(input: {
 
   const hasPlanReadyPrompt =
     !thread.hasPendingUserInput &&
+    !thread.hasAwaitingHumanHandback &&
     thread.interactionMode === "plan" &&
     isLatestRunSettled(thread.latestRun, thread.runtime) &&
     thread.hasActionableProposedPlan;

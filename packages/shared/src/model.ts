@@ -12,7 +12,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { copySorted } from "./Array.ts";
 
-const DEFAULT_PROVIDER_DRIVER_KIND = ProviderDriverKind.make("codex");
+const DEFAULT_PROVIDER_DRIVER_KIND = ProviderDriverKind.make("phi");
 
 export function modelSelectionCommandType(
   currentInstanceId: ProviderInstanceId,
@@ -73,6 +73,23 @@ export function getModelSelectionStringOptionValue(
   id: string,
 ): string | undefined {
   return getProviderOptionStringSelectionValue(modelSelection?.options, id);
+}
+
+/**
+ * exowatt: the phi/pi reasoning-effort option id is `thinkingLevel` (renamed from `thinking`) so
+ * every phi-routed model shares it and a stored selection survives a model switch. Selections
+ * persisted with the old id still resolve: read `thinkingLevel`, then `thinking`.
+ */
+const PI_THINKING_LEVEL_OPTION_ID = "thinkingLevel";
+const LEGACY_PI_THINKING_LEVEL_OPTION_ID = "thinking";
+
+export function getModelSelectionPiThinkingLevelOptionValue(
+  modelSelection: ModelSelection | null | undefined,
+): string | undefined {
+  return (
+    getModelSelectionStringOptionValue(modelSelection, PI_THINKING_LEVEL_OPTION_ID) ??
+    getModelSelectionStringOptionValue(modelSelection, LEGACY_PI_THINKING_LEVEL_OPTION_ID)
+  );
 }
 
 export function getModelSelectionBooleanOptionValue(

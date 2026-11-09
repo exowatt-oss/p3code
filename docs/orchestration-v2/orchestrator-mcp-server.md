@@ -173,8 +173,12 @@ available; optional tools are discovered through Pi's builtin `tool_search`.
 On older Pi or without builtin search, all tools remain directly available.
 The bridge calls the original MCP tool name over HTTP. Follow-up requests send
 `mcp-protocol-version: 2025-06-18`; Effect's MCP transport returns 400
-without it. The first turn of a session also receives the shared T3
-orchestration instructions.
+without it. Only a core set (`PI_T3_EAGER_TOOLS`: delegation, `t3_thread_read`,
+`link_pull_request`) is active from the first turn; the rest stay inactive
+until the agent loads them with `mcp__t3-code__find_tools`. Pi's system prompt
+gets a compact form of the shared T3 orchestration instructions
+(`PI_T3_ORCHESTRATION_INSTRUCTIONS`) that keeps the hard rules and points at
+`find_tools` for tool detail.
 
 Pi keeps ownership of native extension discovery. T3 does not replace Pi's
 `subagent` tool or reproduce Pi's package and project-trust loader. Durable

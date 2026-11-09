@@ -98,7 +98,8 @@ export function threadContextRecord(ref: ScopedThreadRef, title: string): Thread
 /**
  * Turns pasted thread links into thread chip references. A record the copy carried names its
  * chip, else the thread's title here, read by key, or the link's own label. `accept` gives the
- * chip's id, or none to keep the link as written. A v1 link names no machine, so it stays a link.
+ * chip's id, or none to keep the link as written. A v1 or `p3://` link names no machine, so it
+ * stays a link unless the copy carried that thread's record.
  */
 export function threadLinkContextReferences(
   text: string,
@@ -108,8 +109,19 @@ export function threadLinkContextReferences(
     record.contextId,
 ): { readonly text: string; readonly records: ReadonlyArray<ThreadContextRecord> } {
   const records = new Map<ComposerContextId, ThreadContextRecord>();
-  const rewritten = replaceThreadLinks(text, (link, label) => {
-    if (link.environmentId === null) return undefined;
+  const rewritten = replaceThreadLinks(text, (written, label) => {
+    // exowatt: a copied `p3://thread/<id>` link names no machine; the record copied with it does.
+    const copiedEnvironmentId =
+      written.environmentId ??
+      copied.find(
+        (candidate): candidate is ThreadContextRecord =>
+          candidate.kind === "thread" &&
+          "threadId" in candidate &&
+          candidate.threadId === written.threadId,
+      )?.environmentId ??
+      null;
+    if (copiedEnvironmentId === null) return undefined;
+    const link = { ...written, environmentId: copiedEnvironmentId };
     const candidates = threadLinkCandidates(link, link.environmentId);
     const record =
       copied.find(

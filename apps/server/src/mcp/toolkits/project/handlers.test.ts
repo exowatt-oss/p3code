@@ -40,6 +40,103 @@ import * as McpToolAccess from "../../McpToolAccess.ts";
 import * as ProjectHandlers from "./handlers.ts";
 import { ProjectToolkit } from "./tools.ts";
 
+// exowatt: phi has no "auto" mode; t3_thread_launch resolves against the target provider.
+it.effect(
+  "t3_thread_launch resolves a requested auto for a target with no auto mode to the caller's full-access mode, never approval-required",
+  () =>
+    Effect.gen(function* () {
+      const sourceThreadId = ThreadId.make("source-thread-auto");
+      const projectId = ProjectId.make("project-auto");
+      // Pi today: no "auto" in its advertised modes.
+      const piInstanceId = ProviderInstanceId.make("pi");
+      const modelSelection = { instanceId: piInstanceId, model: "pi-model" };
+      const caller = {
+        id: sourceThreadId,
+        projectId,
+        providerInstanceId: piInstanceId,
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        activeRunId: "active-run",
+        archivedAt: null,
+        deletedAt: null,
+      } as OrchestrationV2ThreadShell;
+      const piProvider: ServerProvider = {
+        instanceId: piInstanceId,
+        driver: ProviderDriverKind.make("pi"),
+        enabled: true,
+        installed: true,
+        version: "test",
+        status: "ready",
+        auth: { status: "authenticated" },
+        checkedAt: "2026-09-13T00:00:00.000Z",
+        models: [{ slug: "pi-model", name: "pi-model", isCustom: false, capabilities: null }],
+        slashCommands: [],
+        skills: [],
+        supportedRuntimeModes: ["approval-required", "auto-accept-edits", "full-access"],
+      };
+      let launchedRuntimeMode: string | undefined;
+      const dependencies = Layer.mergeAll(
+        ServerSettings.layerTest(),
+        NodeCrypto.layer,
+        Layer.succeed(McpInvocationContext.McpInvocationContext, {
+          environmentId: EnvironmentId.make("environment"),
+          requestNamespace: "session",
+          thread: {
+            threadId: sourceThreadId,
+            providerSessionId: "session",
+            providerInstanceId: piInstanceId,
+          },
+          client: undefined,
+          issuedAt: 0,
+          capabilities: new Set(["orchestration" as const]),
+        }),
+        Layer.mock(ThreadManagement.ThreadManagementService)({
+          getThreadShell: () => Effect.succeed(caller),
+        }),
+        Layer.mock(ThreadLaunch.ThreadLaunchService)({
+          launch: (input) => {
+            launchedRuntimeMode = input.runtimeMode;
+            return Effect.succeed({
+              threadId: input.threadId,
+              projection: {
+                thread: { id: input.threadId, projectId, title: input.title, modelSelection },
+                runs: [],
+              },
+              resumed: false,
+            } as unknown as ThreadLaunch.ThreadLaunchResult);
+          },
+        }),
+        Layer.mock(Project.ProjectService)({}),
+        Layer.mock(ManagedProjectFolders.ManagedProjectFolders)({ namedProjectsRoot: "/projects" }),
+        Layer.mock(GitVcsDriver.GitVcsDriver)({}),
+        Layer.mock(ProviderRegistry.ProviderRegistry)({
+          getProviders: Effect.succeed([piProvider]),
+        }),
+        DocumentText.layer.pipe(Layer.provideMerge(NodeServices.layer)),
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3-launch-auto-" }).pipe(
+          Layer.provide(NodeServices.layer),
+        ),
+      );
+      const toolkit = yield* ProjectToolkit.pipe(
+        Effect.provide(
+          McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(
+            Layer.provide(dependencies),
+          ),
+        ),
+      );
+      const result = yield* toolkit
+        .handle("t3_thread_launch", {
+          title: "Audit",
+          message: "Review the change",
+          runtimeMode: "auto",
+        })
+        .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+      expect(result.at(-1)?.result).toMatchObject({ projectId, modelSelection });
+      expect(launchedRuntimeMode).toBe("full-access");
+    }),
+);
+
 const clientLaunchHarness = (input: {
   readonly runtimeModeCeiling: RuntimeMode;
   readonly defaultRuntimeMode?: RuntimeMode;
@@ -221,7 +318,8 @@ it.effect(
       expect(belowCeiling.result).toMatchObject({
         projectId: belowCeiling.projectId,
         modelSelection: belowCeiling.modelSelection,
-        link: `<t3-thread://v2/environment/${belowCeiling.launched[0]?.threadId}>`,
+        // exowatt: tool links use P3's `p3://thread/<id>` form (agents are told to write it).
+        link: `<p3://thread/${encodeURIComponent(belowCeiling.launched[0]?.threadId ?? "")}>`,
       });
       expect(belowCeiling.launched[0]?.runtimeMode).toBe("approval-required");
       expect(belowCeiling.launched[0]?.initialMessage?.senderThreadId).toBeUndefined();
@@ -276,7 +374,8 @@ it.effect(
     }),
 );
 
-it.effect("a launch steps an inherited mode down to the provider's, and refuses one it lacks", () =>
+// exowatt: a requested "auto" the provider lacks resolves like an inherited one (phi has no auto).
+it.effect("a launch steps an inherited or requested auto down to the provider's modes", () =>
   Effect.gen(function* () {
     // Pi offers no Auto; a mode a provider lacks would run as Supervised.
     const pi = ProviderInstanceId.make("pi");
@@ -324,8 +423,7 @@ it.effect("a launch steps an inherited mode down to the provider's, and refuses 
     expect(inherited.launched[0]?.runtimeMode).toBe("auto-accept-edits");
 
     const requested = yield* launchPi("auto");
-    expect(requested.result).toMatchObject({ code: "invalid_request" });
-    expect(requested.launched).toHaveLength(0);
+    expect(requested.launched[0]?.runtimeMode).toBe("auto-accept-edits");
 
     const offered = yield* launchPi("approval-required");
     expect(offered.launched[0]?.runtimeMode).toBe("approval-required");
@@ -423,6 +521,46 @@ it.effect("a retried launch replays after the project loses its default model", 
       launched[0]?.threadId,
       launched[0]?.threadId,
     ]);
+  }),
+);
+
+// exowatt: a project's "auto" default on a provider without an auto mode stays unattended.
+it.effect("a client launch onto a provider without auto clamps the project's auto default", () =>
+  Effect.gen(function* () {
+    const launched: Array<ThreadLaunch.ThreadLaunchInput> = [];
+    const { projectId, dependencies } = clientLaunchHarness({
+      runtimeModeCeiling: "auto",
+      defaultRuntimeMode: "auto",
+      launched,
+      providers: [
+        {
+          instanceId: ProviderInstanceId.make("claudeAgent"),
+          driver: ProviderDriverKind.make("phi"),
+          enabled: true,
+          installed: true,
+          version: "test",
+          status: "ready",
+          auth: { status: "authenticated" },
+          checkedAt: "2026-09-13T00:00:00.000Z",
+          models: [
+            { slug: "claude-opus", name: "claude-opus", isCustom: false, capabilities: null },
+          ],
+          slashCommands: [],
+          skills: [],
+          supportedRuntimeModes: ["approval-required", "auto-accept-edits", "full-access"],
+        },
+      ],
+    });
+    const toolkit = yield* ProjectToolkit.pipe(
+      Effect.provide(
+        McpToolAccess.HandlersLayer.layer(ProjectHandlers.layer).pipe(Layer.provide(dependencies)),
+      ),
+    );
+    const result = yield* toolkit
+      .handle("t3_thread_launch", { title: "Fix", projectId })
+      .pipe(Stream.unwrap, Stream.runCollect, Effect.provide(dependencies));
+    expect(result.at(-1)?.result).toMatchObject({ projectId });
+    expect(launched[0]?.runtimeMode).toBe("auto-accept-edits");
   }),
 );
 

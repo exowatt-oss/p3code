@@ -2,6 +2,10 @@ import "vite-plus/test/config";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- tsdown needs the asset path when it reads this config.
 import * as NodePath from "node:path";
 import { defineConfig, mergeConfig } from "vite-plus";
+// exowatt: resolves the jsonc-parser ESM entry at config time.
+import * as NodeModule from "node:module";
+// exowatt: resolves the fff-node SEA shim path at config time.
+import * as NodeURL from "node:url";
 
 import baseConfig from "../../vite.config.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
@@ -75,6 +79,19 @@ const { projects: _rootTestProjects, ...baseTestConfig } = baseConfig.test ?? {}
 // Workspace cache configuration is invalid on a package config.
 const { run: _rootRunConfig, ...basePackageConfig } = baseConfig;
 
+// Exowatt: jsonc-parser's UMD `main` leaves runtime `require("./impl/*")` calls in the bundle
+// (MODULE_NOT_FOUND at startup); its ESM build cannot run unbundled. Source keeps the package
+// root and only the bundle aliases the ESM entry, by absolute path so the alias cannot self-match.
+const jsoncParserEsmEntry = NodeModule.createRequire(import.meta.url).resolve(
+  "jsonc-parser/lib/esm/main.js",
+);
+// Exowatt: fff-node ships only an ESM entry, which npm and SSH-remote bundles keep; the SEA
+// build needs a filesystem-backed require, so only it aliases a local shim and Rolldown drops
+// the ESM import from the SEA graph.
+const fffNodeSeaEntry = NodeURL.fileURLToPath(
+  new URL("./src/workspace/fffNodeSea.ts", import.meta.url),
+);
+
 export default mergeConfig(
   { ...basePackageConfig, test: baseTestConfig },
   defineConfig({
@@ -115,11 +132,18 @@ export default mergeConfig(
             },
           }
         : {}),
+      alias: {
+        "jsonc-parser": jsoncParserEsmEntry,
+        ...(packExecutable ? { "@ff-labs/fff-node": fffNodeSeaEntry } : {}),
+      },
       deps: {
         // alwaysBundle=false has no opinion; neverBundle must retain transitive native acceleration.
-        alwaysBundle: shouldBundleCliDependency,
+        // exowatt: the SEA build bundles fff-node through its shim instead.
+        alwaysBundle: (id: string) =>
+          packExecutable && id === "@ff-labs/fff-node" ? true : shouldBundleCliDependency(id),
         neverBundle: (id: string) =>
-          (packBootstrap && id === "./binMain.ts") || isExternalCliDependency(id),
+          (packBootstrap && id === "./binMain.ts") ||
+          (packExecutable && id === "@ff-labs/fff-node" ? false : isExternalCliDependency(id)),
         onlyBundle: false,
       },
       banner: {

@@ -13,8 +13,10 @@ import {
   OrchestrationV2AppThreadJson,
   type OrchestrationV2ConversationMessage,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2ProviderThread,
   type OrchestrationV2TurnItem,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
   ThreadId,
   ThreadLinkedPullRequest,
@@ -34,6 +36,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as EventSink from "../EventSink.ts";
 import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
+import { deriveProviderThread } from "@t3tools/provider-core/server/IdAllocator";
 
 const IMPORT_EVENT_PREFIX = "migration:v1";
 const TRANSCRIPT_EVENT_BATCH_SIZE = 100;
@@ -143,10 +146,73 @@ function modelSelectionFor(row: LegacyThreadRow) {
     row.model_selection_json === null
       ? Option.none()
       : decodeModelSelection(parseJson(row.model_selection_json));
-  return Option.getOrElse(decoded, () => ({
+  return Option.getOrElse(Option.map(decoded, withPhiThinkingOption), () => ({
     instanceId: ProviderInstanceId.make("codex"),
     model: DEFAULT_MODEL,
   }));
+}
+
+// exowatt: v1 Phi stored effort as `thinkingLevel`, the current Pi option id. Identity on the
+// happy path; also upgrades a selection imported with the short-lived `thinking` id.
+const PHI_DRIVER = ProviderDriverKind.make("phi");
+const PHI_DEFAULT_INSTANCE = ProviderInstanceId.make("phi");
+function withPhiThinkingOption(selection: ModelSelection): ModelSelection {
+  if (selection.instanceId !== PHI_DEFAULT_INSTANCE || selection.options === undefined)
+    return selection;
+  return {
+    ...selection,
+    options: selection.options.map((option) =>
+      option.id === "thinking" ? { ...option, id: "thinkingLevel" } : option,
+    ),
+  };
+}
+
+interface LegacyPhiRuntimeRow {
+  readonly provider_instance_id: string | null;
+  readonly resume_cursor_json: string | null;
+}
+
+/**
+ * exowatt: the native Phi session a v1 thread was bound to, carried over so the
+ * first v2 turn resumes it (`switch_session`) instead of replaying the
+ * transcript into a fresh session. Only when the thread still targets that
+ * instance; a missing session file falls back to a context handoff at resume.
+ */
+function legacyPhiProviderThread(
+  thread: OrchestrationV2AppThread,
+  runtime: LegacyPhiRuntimeRow | undefined,
+): OrchestrationV2ProviderThread | null {
+  if (runtime === undefined) return null;
+  const instanceId = ProviderInstanceId.make(runtime.provider_instance_id ?? PHI_DEFAULT_INSTANCE);
+  if (instanceId !== thread.modelSelection.instanceId) return null;
+  const cursor =
+    runtime.resume_cursor_json === null ? undefined : parseJson(runtime.resume_cursor_json);
+  const sessionPath =
+    typeof cursor === "object" &&
+    cursor !== null &&
+    "sessionPath" in cursor &&
+    typeof cursor.sessionPath === "string"
+      ? cursor.sessionPath.trim()
+      : "";
+  if (sessionPath === "") return null;
+  return {
+    // Same derivation as PiAdapterV2, so the adapter recognizes the session.
+    id: deriveProviderThread({ driver: PHI_DRIVER, nativeThreadId: sessionPath }),
+    driver: PHI_DRIVER,
+    providerInstanceId: instanceId,
+    providerSessionId: null,
+    appThreadId: thread.id,
+    ownerNodeId: null,
+    nativeThreadRef: { driver: PHI_DRIVER, nativeId: sessionPath, strength: "strong" },
+    nativeConversationHeadRef: null,
+    status: "not_loaded",
+    firstRunOrdinal: null,
+    lastRunOrdinal: null,
+    handoffIds: [],
+    forkedFrom: null,
+    createdAt: thread.createdAt,
+    updatedAt: thread.updatedAt,
+  };
 }
 
 function attachmentsFor(row: LegacyMessageRow) {
@@ -580,6 +646,16 @@ const make = Effect.gen(function* () {
     for (const row of rows) {
       const thread = importedThread(row);
       const previews = yield* listShellMessages(thread.id);
+      // exowatt: carry the v1 Phi session binding over (see legacyPhiProviderThread).
+      const phiRuntime = yield* sql<LegacyPhiRuntimeRow>`
+        SELECT provider_instance_id, resume_cursor_json
+        FROM provider_session_runtime
+        WHERE thread_id = ${row.thread_id} AND provider_name = ${PHI_DRIVER}
+        LIMIT 1
+      `;
+      const providerThread = legacyPhiProviderThread(thread, phiRuntime[0]);
+      const shell =
+        providerThread === null ? thread : { ...thread, activeProviderThreadId: providerThread.id };
       const events: Array<OrchestrationV2DomainEvent> = [
         {
           id: EventId.make(`${IMPORT_EVENT_PREFIX}:thread:${row.thread_id}:created`),
@@ -589,6 +665,19 @@ const make = Effect.gen(function* () {
           occurredAt: thread.createdAt,
           payload: thread,
         },
+        ...(providerThread === null
+          ? []
+          : [
+              {
+                id: EventId.make(`${IMPORT_EVENT_PREFIX}:thread:${row.thread_id}:provider-thread`),
+                type: "provider-thread.updated" as const,
+                threadId: thread.id,
+                driver: providerThread.driver,
+                providerInstanceId: providerThread.providerInstanceId,
+                occurredAt: thread.updatedAt,
+                payload: providerThread,
+              },
+            ]),
         ...previews.flatMap(messageEvents),
         {
           id: EventId.make(`${IMPORT_EVENT_PREFIX}:thread:${row.thread_id}:shell`),
@@ -596,7 +685,7 @@ const make = Effect.gen(function* () {
           threadId: thread.id,
           providerInstanceId: thread.providerInstanceId,
           occurredAt: thread.updatedAt,
-          payload: thread,
+          payload: shell,
         },
       ];
       yield* sql.withTransaction(

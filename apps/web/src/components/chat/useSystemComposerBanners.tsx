@@ -1,5 +1,9 @@
 import { useStableCallback } from "../../hooks/useStableCallback";
-import { type EnvironmentId } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  isExowattNoCompatibleRemoteServerError,
+  isExowattStockRemoteServerError,
+} from "@t3tools/contracts";
 import { type EnvironmentConnectionPresentation } from "@t3tools/client-runtime/connection";
 import { useAtomValue } from "@effect/atom-react";
 import { useState } from "react";
@@ -25,6 +29,17 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { Button } from "../ui/button";
 import { ServerUpdateAction, serverUpdateStageLabel } from "../ServerUpdateAction";
 import { useAutoBalanceUpdateBanner } from "./useAutoBalanceUpdateBanner";
+// exowatt: SSH remote recovery actions (stop stock T3 server, push dev server).
+import {
+  describeExowattStockRemoteServerStop,
+  EXOWATT_STOP_STOCK_REMOTE_SERVER_LABEL,
+  resolveExowattStockRemoteServerAction,
+} from "./exowattStockRemoteServer";
+import {
+  EXOWATT_PUSH_DEV_SERVER_LABEL,
+  resolveExowattPushDevServerAction,
+  shouldOfferExowattPushDevServer,
+} from "./exowattRemoteServer";
 import { ComposerServerUpdateIcon } from "./ComposerServerUpdateStatus";
 import {
   dismissServerUpdateFailure,
@@ -103,6 +118,94 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
   const handleReconnectActiveEnvironmentStable = useStableCallback(
     handleReconnectActiveEnvironment,
   );
+  // exowatt: the remote refused because a stock T3 server owns ~/.t3 there.
+  const exowattStockRemoteServerAction = resolveExowattStockRemoteServerAction({
+    environment: activeEnvironment,
+    error: activeEnvironment?.connection.error ?? null,
+    bridge: window.desktopBridge,
+  });
+  const [exowattStoppingStockRemoteServer, setExowattStoppingStockRemoteServer] = useState(false);
+  const handleExowattStopStockRemoteServer = async (environmentId: EnvironmentId) => {
+    if (exowattStockRemoteServerAction === null) return;
+    setExowattStoppingStockRemoteServer(true);
+    // Promise chaining, not try/finally: the React Compiler skips a component with a finalizer.
+    const stopped = await exowattStockRemoteServerAction
+      .stop()
+      .then(
+        (result) => {
+          toastManager.add(
+            stackedThreadToast({
+              type: "success",
+              title: "Stopped the stock T3 Code server",
+              description: describeExowattStockRemoteServerStop(result),
+            }),
+          );
+          return true;
+        },
+        (error: unknown) => {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Could not stop the stock T3 Code server",
+              description:
+                error instanceof Error ? error.message : "The remote host rejected the request.",
+            }),
+          );
+          return false;
+        },
+      )
+      .finally(() => setExowattStoppingStockRemoteServer(false));
+    if (!stopped) return;
+    await handleReconnectActiveEnvironment(environmentId);
+  };
+  // exowatt (dev builds): nothing compatible on the remote and no bundled
+  // server; offer to install the worktree's packed server instead of stock t3.
+  const exowattPushDevServerCandidate = resolveExowattPushDevServerAction({
+    environment: activeEnvironment,
+    bridge: window.desktopBridge,
+    isDevelopment: import.meta.env.DEV,
+  });
+  const exowattPushDevServerAction = shouldOfferExowattPushDevServer({
+    action: exowattPushDevServerCandidate,
+    error: activeEnvironment?.connection.error ?? null,
+  })
+    ? exowattPushDevServerCandidate
+    : null;
+  const [exowattPushingDevServer, setExowattPushingDevServer] = useState(false);
+  const handleExowattPushDevServer = async (environmentId: EnvironmentId) => {
+    if (exowattPushDevServerAction === null) return;
+    setExowattPushingDevServer(true);
+    const pushed = await exowattPushDevServerAction
+      .push()
+      .then(
+        (result) => {
+          toastManager.add(
+            stackedThreadToast({
+              type: "success",
+              title: `Dev server ${result.version} installed on ${exowattPushDevServerAction.host}`,
+              description: "Reconnecting with the pushed server.",
+            }),
+          );
+          return true;
+        },
+        (error: unknown) => {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Could not push the dev server",
+              description:
+                error instanceof Error ? error.message : "The remote host rejected the install.",
+            }),
+          );
+          return false;
+        },
+      )
+      .finally(() => setExowattPushingDevServer(false));
+    if (!pushed) return;
+    await handleReconnectActiveEnvironment(environmentId);
+  };
+  const exowattRemoteRecoveryOffered =
+    exowattStockRemoteServerAction !== null || exowattPushDevServerAction !== null;
   const disconnectDelayElapsed = useEnvironmentDisconnectDelay(
     activeEnvironmentUnavailable && activeEnvironment ? activeEnvironment.environmentId : null,
   );
@@ -190,15 +293,48 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
         group: "environment",
         icon: <WifiOffIcon />,
         title: `${activeEnvironmentUnavailableState.label} is ${environmentReconnecting ? "reconnecting" : "offline"}`,
-        description: activeEnvironment ? (
-          <ConnectionDiagnosisHeadline environment={activeEnvironment} />
-        ) : undefined,
+        // exowatt: a P3 remote refusal explains itself; show it instead of the generic headline.
+        description:
+          unavailableConnection.error &&
+          (isExowattStockRemoteServerError(unavailableConnection.error) ||
+            isExowattNoCompatibleRemoteServerError(unavailableConnection.error)) ? (
+            unavailableConnection.error
+          ) : activeEnvironment ? (
+            <ConnectionDiagnosisHeadline environment={activeEnvironment} />
+          ) : undefined,
         actions: (
           <>
+            {/* exowatt: stop a stock T3 server / push the dev server on SSH remotes. */}
+            {exowattStockRemoteServerAction !== null ? (
+              <Button
+                size="xs"
+                disabled={exowattStoppingStockRemoteServer}
+                onClick={() =>
+                  void handleExowattStopStockRemoteServer(
+                    activeEnvironmentUnavailableState.environmentId,
+                  )
+                }
+              >
+                {exowattStoppingStockRemoteServer
+                  ? "Stopping..."
+                  : EXOWATT_STOP_STOCK_REMOTE_SERVER_LABEL}
+              </Button>
+            ) : null}
+            {exowattPushDevServerAction !== null ? (
+              <Button
+                size="xs"
+                disabled={exowattPushingDevServer}
+                onClick={() =>
+                  void handleExowattPushDevServer(activeEnvironmentUnavailableState.environmentId)
+                }
+              >
+                {exowattPushingDevServer ? "Pushing..." : EXOWATT_PUSH_DEV_SERVER_LABEL}
+              </Button>
+            ) : null}
             {!environmentReconnecting ? (
               <Button
                 size="xs"
-                variant="ghost"
+                variant={exowattRemoteRecoveryOffered ? "outline" : "ghost"}
                 onClick={() =>
                   void handleReconnectActiveEnvironmentStable(
                     activeEnvironmentUnavailableState.environmentId,
@@ -244,6 +380,7 @@ export function useSystemComposerBanners(input: SystemComposerBannersInput) {
             installation={versionMismatchInstallation}
             desktopAppUpdate={versionMismatchDesktopAppUpdate}
             targetVersion={versionMismatch.clientVersion}
+            serverVersion={versionMismatch.serverVersion}
             label="Retry"
             variant="ghost"
           />

@@ -786,4 +786,121 @@ it.layer(layerTest)("LegacyV1ThreadImporter", (it) => {
       assert.deepStrictEqual(eventsAfterRestart, eventsBeforeRetry);
     }),
   );
+
+  // exowatt: v1 Phi threads keep their native session across the cutover.
+  it.effect("carries a v1 Phi session binding into the imported thread", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = ThreadId.make("thread:legacy-phi");
+      const otherThreadId = ThreadId.make("thread:legacy-phi-switched");
+      const sessionPath = "/Users/me/.pi/agent/sessions/--repo--/2026-01-01_abc.jsonl";
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, default_model_selection_json, scripts_json,
+          created_at, updated_at, deleted_at
+        ) VALUES (
+          'project:legacy-phi', 'Phi project', '/tmp/legacy-phi', NULL, '[]',
+          '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', NULL
+        )
+      `;
+      for (const [id, selection] of [
+        [
+          threadId,
+          '{"instanceId":"phi","model":"anthropic/claude-a","options":[{"id":"thinkingLevel","value":"high"}]}',
+        ],
+        [otherThreadId, '{"instanceId":"codex","model":"gpt-5.4"}'],
+      ] as const) {
+        yield* sql`
+          INSERT INTO projection_threads (
+            thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+            branch, worktree_path, latest_turn_id, created_at, updated_at, archived_at, deleted_at
+          ) VALUES (
+            ${id}, 'project:legacy-phi', 'Phi conversation', ${selection}, 'full-access',
+            'default', NULL, NULL, NULL, '2026-01-01T00:00:00.000Z',
+            '2026-01-02T00:00:00.000Z', NULL, NULL
+          )
+        `;
+        yield* sql`
+          INSERT INTO provider_session_runtime (
+            thread_id, provider_name, adapter_key, runtime_mode, status, last_seen_at,
+            resume_cursor_json, runtime_payload_json, provider_instance_id
+          ) VALUES (
+            ${id}, 'phi', 'phi', 'full-access', 'stopped', '2026-01-02T00:00:00.000Z',
+            ${`{"schemaVersion":1,"sessionPath":"${sessionPath}"}`}, NULL, 'phi'
+          )
+        `;
+      }
+
+      yield* importer.reconcileShells;
+
+      const imported = yield* projections.getThreadProjection(threadId);
+      assert.deepStrictEqual(imported.thread.modelSelection.options, [
+        { id: "thinkingLevel", value: "high" },
+      ]);
+      const providerThread = imported.providerThreads.find(
+        (candidate) => candidate.id === imported.thread.activeProviderThreadId,
+      );
+      assert.equal(providerThread?.driver, "phi");
+      assert.equal(providerThread?.nativeThreadRef?.nativeId, sessionPath);
+      assert.equal(providerThread?.status, "not_loaded");
+
+      // The thread moved to another provider after its Phi session: nothing to resume.
+      const switched = yield* projections.getThreadProjection(otherThreadId);
+      assert.isNull(switched.thread.activeProviderThreadId);
+      assert.lengthOf(switched.providerThreads, 0);
+    }),
+  );
+
+  // exowatt: a short-lived rename briefly stored this option as "thinking";
+  // an already-imported row must still read correctly on the current
+  // "thinkingLevel" id instead of losing the stored effort.
+  it.effect("upgrades an already-imported legacy 'thinking' option id to 'thinkingLevel'", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const importer = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const threadId = ThreadId.make("thread:legacy-phi-thinking-alias");
+      const sessionPath = "/Users/me/.pi/agent/sessions/--repo--/2026-01-02_abc.jsonl";
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id, title, workspace_root, default_model_selection_json, scripts_json,
+          created_at, updated_at, deleted_at
+        ) VALUES (
+          'project:legacy-phi-thinking-alias', 'Phi project', '/tmp/legacy-phi-thinking-alias', NULL, '[]',
+          '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id, project_id, title, model_selection_json, runtime_mode, interaction_mode,
+          branch, worktree_path, latest_turn_id, created_at, updated_at, archived_at, deleted_at
+        ) VALUES (
+          ${threadId}, 'project:legacy-phi-thinking-alias', 'Phi conversation',
+          '{"instanceId":"phi","model":"anthropic/claude-a","options":[{"id":"thinking","value":"medium"}]}',
+          'full-access', 'default', NULL, NULL, NULL, '2026-01-01T00:00:00.000Z',
+          '2026-01-02T00:00:00.000Z', NULL, NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO provider_session_runtime (
+          thread_id, provider_name, adapter_key, runtime_mode, status, last_seen_at,
+          resume_cursor_json, runtime_payload_json, provider_instance_id
+        ) VALUES (
+          ${threadId}, 'phi', 'phi', 'full-access', 'stopped', '2026-01-02T00:00:00.000Z',
+          ${`{"schemaVersion":1,"sessionPath":"${sessionPath}"}`}, NULL, 'phi'
+        )
+      `;
+
+      yield* importer.reconcileShells;
+
+      const imported = yield* projections.getThreadProjection(threadId);
+      assert.deepStrictEqual(imported.thread.modelSelection.options, [
+        { id: "thinkingLevel", value: "medium" },
+      ]);
+    }),
+  );
 });

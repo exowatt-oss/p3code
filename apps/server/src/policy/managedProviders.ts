@@ -12,6 +12,7 @@ import {
   type ProviderInstanceEnvironmentVariable,
   type ProviderInstanceId,
   resolveProviderInstanceEnabled,
+  PhiSettings,
   type RuntimeMode,
   type ServerSettings,
 } from "@t3tools/contracts";
@@ -72,6 +73,8 @@ const KNOWN_DRIVERS: ReadonlyMap<ProviderDriverKind, KnownDriver> = new Map([
   known("codex", "Codex", CodexSettings),
   known("claudeAgent", "Claude", ClaudeSettings),
   known("antigravity", "Antigravity", AntigravitySettings),
+  // exowatt: Phi is a built-in P3 driver, so a policy must be able to name (and pin) it.
+  known("phi", "Phi", PhiSettings),
   ...PACKAGED_CLIENTS.map((client) =>
     known(client.driverKind, client.label, client.settingsSchema, client.hasDefaultInstance),
   ),

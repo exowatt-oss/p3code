@@ -1186,9 +1186,13 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
   it.effect.each([
     [
       "--append-system-prompt-file missing.md",
+      // exowatt: client failure messages redact paths, explicit messages included.
       (cwd: string) =>
-        new ClaudeAdapterV2.ClaudeAppendSystemPromptFileError({
-          path: NodePath.join(cwd, "missing.md"),
+        makeProviderFailure({
+          cause: new ClaudeAdapterV2.ClaudeAppendSystemPromptFileError({
+            path: NodePath.join(cwd, "missing.md"),
+          }),
+          class: "provider_error",
         }).message,
     ],
     [
@@ -1214,9 +1218,13 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
     ],
     [
       "--settings missing.json",
+      // exowatt: client failure messages redact paths, explicit messages included.
       (cwd: string) =>
-        new ClaudeAdapterV2.ClaudeSettingsLaunchArgError({
-          path: NodePath.join(cwd, "missing.json"),
+        makeProviderFailure({
+          cause: new ClaudeAdapterV2.ClaudeSettingsLaunchArgError({
+            path: NodePath.join(cwd, "missing.json"),
+          }),
+          class: "provider_error",
         }).message,
     ],
     ["--settings '{not json}'", () => new ClaudeAdapterV2.ClaudeSettingsLaunchArgError({}).message],
@@ -1234,10 +1242,9 @@ describe("ClaudeAdapterV2 append-system-prompt-file launch argument", () => {
         assert.lengthOf(opened, 0);
         assert.isTrue(Exit.isFailure(exit));
         if (!Exit.isFailure(exit)) return;
-        assert.equal(
-          makeProviderFailure({ cause: exit.cause, class: "provider_error" }).message,
-          expectedMessage(cwd),
-        );
+        const message = makeProviderFailure({ cause: exit.cause, class: "provider_error" }).message;
+        assert.equal(message, expectedMessage(cwd));
+        assert.notInclude(message, cwd);
       }).pipe(
         Effect.provide(
           Layer.mergeAll(
@@ -6603,12 +6610,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
 
   it.effect("names an expired Claude login instead of the terminal API error", () =>
     Effect.gen(function* () {
-      const configDir = "/synthetic/Claude config";
-      // The adapter resolves the cwd on the host, which adds a drive letter on Windows.
-      const cwd = NodePath.resolve("/synthetic/project");
-      const harness = yield* makeWakeHarnessWithOptions({
-        environment: { CLAUDE_CONFIG_DIR: configDir },
-      });
+      const harness = yield* makeWakeHarness;
       const now = yield* DateTime.now;
       yield* harness.runtime.startTurn(
         makeClaudeTestTurnInput({
@@ -6618,11 +6620,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           attemptId: RunAttemptId.make("attempt-claude-auth-failure"),
           text: "Continue.",
           attachments: [],
-          runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
-            runtimeMode: "full-access",
-            interactionMode: "default",
-            cwd,
-          }),
         }),
       );
       yield* Queue.offerAll(harness.sdkMessages, [
@@ -6641,8 +6638,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       assert.equal(terminal.status, "failed");
       if (terminal.status !== "failed") return;
       assert.include(terminal.failure.message, "run `claude auth login`");
-      assert.include(terminal.failure.message, configDir);
-      assert.include(terminal.failure.message, JSON.stringify(cwd));
+      // exowatt: failure messages redact paths, so the config dir and cwd never
+      // reach the client; ClaudeHome.test.ts covers the path-specific login
+      // guidance. This test only proves auth errors beat the API fallback.
       assert.notInclude(terminal.failure.message, "repeated API errors");
     }).pipe(
       Effect.provide(
@@ -16590,9 +16588,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             }),
           )
           .pipe(Effect.flip);
+        // exowatt: client failure messages redact paths, explicit messages included.
         assert.equal(
           makeProviderFailure({ cause: refused, class: "provider_error" }).message,
-          new ClaudeAdapterV2.ClaudeAppendSystemPromptFileError({ path: appendFile }).message,
+          makeProviderFailure({
+            cause: new ClaudeAdapterV2.ClaudeAppendSystemPromptFileError({ path: appendFile }),
+            class: "provider_error",
+          }).message,
         );
         assert.lengthOf(processQueues, 1);
         assert.equal(closes, 0);

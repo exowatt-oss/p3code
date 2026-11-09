@@ -1868,12 +1868,15 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
     }),
   );
 
-  it.effect("dismisses message-capable questions directly and while settling", () =>
+  it.effect("dismisses message-capable questions and clears Phi hand-backs on normal replies", () =>
     Effect.gen(function* () {
       const orchestrator = yield* Orchestrator.OrchestratorV2;
       const eventSink = yield* EventSink.EventSinkV2;
 
-      const seedQuestion = Effect.fn("runtimeLayerTest.seedQuestion")(function* (name: string) {
+      const seedQuestion = Effect.fn("runtimeLayerTest.seedQuestion")(function* (
+        name: string,
+        nativeRequestRef: OrchestrationV2RuntimeRequest["nativeRequestRef"] = null,
+      ) {
         const threadId = ThreadId.make(`${name}-thread`);
         const requestId = RuntimeRequestId.make(`${name}-request`);
         const nodeId = NodeId.make(`${name}-node`);
@@ -1930,7 +1933,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
                 id: requestId,
                 nodeId,
                 providerTurnId: null,
-                nativeRequestRef: null,
+                nativeRequestRef,
                 kind: "user_input",
                 status: "pending",
                 responseCapability: { type: "message" },
@@ -2007,6 +2010,49 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
       assert.equal(
         settledProjection.turnItems.find((item) => item.id === settled.itemId)?.status,
         "cancelled",
+      );
+
+      // No Phi session exists in this fixture: a reply still clears a passive
+      // hand-back when the old adapter's in-memory question was lost on restart.
+      const handback = yield* seedQuestion("runtime-phi-handback", {
+        driver: ProviderDriverKind.make("phi"),
+        nativeId: "workspace-state:old-turn",
+        strength: "weak",
+      });
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-phi-handback-reply"),
+        threadId: handback.threadId,
+        messageId: MessageId.make("runtime-phi-handback-message"),
+        text: "Yes, ship it with this screenshot.",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+      });
+      const replied = yield* orchestrator.getThreadProjection(handback.threadId);
+      assert.equal(replied.runtimeRequests[0]?.status, "resolved");
+      assert.equal(replied.runtimeRequests[0]?.decision, "cancel");
+      assert.equal(replied.nodes.find((node) => node.id === handback.nodeId)?.status, "cancelled");
+      assert.equal(replied.messages[0]?.text, "Yes, ship it with this screenshot.");
+      assert.equal(replied.runs.length, 1);
+
+      const actualQuestion = yield* seedQuestion("runtime-other-question");
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make("runtime-other-question-message-command"),
+        threadId: actualQuestion.threadId,
+        messageId: MessageId.make("runtime-other-question-message"),
+        text: "Another message",
+        attachments: [],
+        dispatchMode: { type: "start_immediately" },
+      });
+      assert.equal(
+        (yield* orchestrator.getThreadProjection(actualQuestion.threadId)).runtimeRequests[0]
+          ?.status,
+        "pending",
       );
     }),
   );

@@ -246,6 +246,11 @@ describe("resolveSidebarThreadStatus", () => {
     ).toBe("approval");
   });
 
+  it("shows Input for a passive Phi hand-back without pending user input", () => {
+    expect(resolveSidebarThreadStatus({ ...idle, hasAwaitingHumanHandback: true })).toBe("input");
+    expect(resolveSidebarThreadStatus({ ...idle, hasAwaitingHumanHandback: false })).toBe("ready");
+  });
+
   it("shows a waiting guest message as a Request, below the agent's own requests", () => {
     expect(resolveSidebarThreadStatus({ ...idle, pendingGuestMessageCount: 1, runtime })).toBe(
       "request",

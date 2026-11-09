@@ -1,7 +1,6 @@
 packages:
   - apps/*
   - evals
-  - infra/*
   - oxlint-plugin-t3code
   - packages/*
   - scripts
@@ -218,6 +217,9 @@ packageExtensions:
     dependencies:
       vite-plus: "catalog:"
 
+# Release smoke re-resolves without a lockfile, so pin each patched package to its exact
+# patched version (a direct dependency, catalog entry or override). A range drifts past
+# the patch as soon as a newer release is published and fails ERR_PNPM_UNUSED_PATCH.
 patchedDependencies:
   react-native-image-viewing@0.2.2: patches/react-native-image-viewing@0.2.2.patch
   mdast-util-math@3.0.0: patches/mdast-util-math@3.0.0.patch
@@ -229,7 +231,6 @@ patchedDependencies:
   expo-video@58.0.11: patches/expo-video@58.0.11.patch
   expo-network@58.0.3: patches/expo-network@58.0.3.patch
   "@clerk/expo-native-components@0.4.0": patches/@clerk__expo-native-components@0.4.0.patch
-  "@alchemy.run/test@2.0.0-beta.85": patches/@alchemy.run__test@2.0.0-beta.85.patch
   "@effect/vitest@4.1.2": patches/@effect__vitest@4.1.2.patch
   "@expo/metro-config@58.0.14": patches/@expo__metro-config@58.0.14.patch
   expo-sharing@58.0.19: patches/expo-sharing@58.0.19.patch
@@ -243,6 +244,8 @@ patchedDependencies:
   "@react-native-menu/menu@2.0.0": patches/@react-native-menu__menu@2.0.0.patch
   "@react-navigation/native-stack@7.21.0": patches/@react-navigation%2Fnative-stack@7.21.0.patch
   dbus-next@0.10.2: patches/dbus-next@0.10.2.patch
+  # Release builds install the server's runtime externals without the lockfile, so apps/server
+  # must declare this exact version; a range drifts past the patch and fails ERR_PNPM_UNUSED_PATCH.
   node-pty@1.2.0-beta.15: patches/node-pty@1.2.0-beta.15.patch
   react-native-gesture-handler@3.3.0: patches/react-native-gesture-handler@3.3.0.patch
   # Screens v5 stack, split and tab screens leave at once, like legacy screens. Exiting animations
@@ -265,7 +268,6 @@ patchedDependencies:
   # A newline in a copied table cell becomes <br>, so Copy as Markdown keeps the row whole.
   react-native-enriched-markdown@1.2.0-t3.16: patches/react-native-enriched-markdown@1.2.0-t3.16.patch
   # A failed Artifacts.cached effect hangs every later caller: https://github.com/alchemy-run/alchemy/issues/2981
-  alchemy@2.0.0-beta.85: patches/alchemy@2.0.0-beta.85.patch
 
 # Unmet peers fail resolution, so a pin outside a dependency's peer range is
 # caught when the lockfile changes instead of scrolling past as a warning.

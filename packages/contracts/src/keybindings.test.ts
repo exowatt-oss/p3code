@@ -2,7 +2,7 @@ import { assert, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 import * as Effect from "effect/Effect";
 
-import { ResolvedKeybindingsConfig } from "./keybindings.ts";
+import { KeybindingRule, ResolvedKeybindingsConfig } from "./keybindings.ts";
 
 const decode = <S extends Schema.Top>(
   schema: S,
@@ -13,6 +13,20 @@ const decode = <S extends Schema.Top>(
     Schema.SchemaError,
     never
   >;
+
+// exowatt: P3's own keybinding commands decode as rules.
+it.effect("parses P3 keybinding commands", () =>
+  Effect.gen(function* () {
+    for (const [key, command] of [
+      ["mod+shift+p", "settings.open"],
+      ["mod+alt+h", "rightPanel.hub"],
+      ["mod+alt+r", "thread.restartSession"],
+    ] as const) {
+      const parsed = yield* decode(KeybindingRule, { key, command });
+      assert.strictEqual(parsed.command, command);
+    }
+  }),
+);
 
 const shortcut = {
   key: "p",

@@ -86,14 +86,19 @@ function makeRestartAdapter(
   state: Ref.Ref<RestartAdapterState>,
   sessionCapabilities: OrchestrationV2ProviderCapabilities = pooledCapabilities,
   providerInstanceId = initialSelection.instanceId,
+  runtimeDriver = driver,
+  onLiveSelection?: (
+    selection: ModelSelection,
+  ) => Effect.Effect<void, ProviderAdapter.ProviderAdapterProtocolError>,
 ): ProviderAdapter.ProviderAdapterV2["Service"] {
+  const driver = runtimeDriver;
   return {
     instanceId: providerInstanceId,
     driver,
     getCapabilities: () => Effect.succeed(sessionCapabilities),
     planSelectionTransition: ({ current, target }) =>
       Effect.succeed(
-        current.model === target.model
+        current.model === target.model || onLiveSelection !== undefined
           ? ({ type: "apply_on_next_turn" } as const)
           : ({ type: "restart_session" } as const),
       ),
@@ -256,6 +261,7 @@ function makeRestartAdapter(
               }
               yield* publishTerminal(active, "completed");
             }),
+          ...(onLiveSelection === undefined ? {} : { setModelSelection: onLiveSelection }),
           steerTurn: () => Effect.void,
           interruptTurn: () =>
             Effect.gen(function* () {
@@ -283,6 +289,119 @@ function makeRestartAdapter(
       }),
   };
 }
+
+it.live("applies a Phi model change to the running session before persisting it", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const name = "selection-phi-live";
+      const cwd = yield* checkpointWorkspace(name);
+      const threadId = ThreadId.make(`thread:${name}`);
+      const state = yield* Ref.make<RestartAdapterState>({
+        activeTurn: null,
+        opened: [],
+        started: [],
+        closedSessionCount: 0,
+        failedReplacementOpen: true,
+      });
+      const changedModels: string[] = [];
+      let failNext = false;
+      const registry = ProviderAdapterRegistry.layerSingle(
+        makeRestartAdapter(
+          state,
+          pooledCapabilities,
+          providerInstanceId,
+          ProviderDriverKind.make("phi"),
+          (selection) =>
+            Effect.suspend(() => {
+              changedModels.push(selection.model);
+              if (failNext) {
+                return Effect.fail(
+                  new ProviderAdapter.ProviderAdapterProtocolError({
+                    driver: ProviderDriverKind.make("phi"),
+                    detail: "simulated model rejection",
+                  }),
+                );
+              }
+              return Effect.void;
+            }),
+        ),
+      );
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make(`${name}:create`),
+          threadId,
+          projectId: ProjectId.make(`project:${name}`),
+          title: name,
+          modelSelection: initialSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: cwd,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const running = yield* orchestrator.streamDomainEvents.pipe(
+          Stream.filter(
+            (event) => event.type === "provider-turn.updated" && event.payload.status === "running",
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
+        yield* orchestrator.dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`${name}:first`),
+          threadId,
+          messageId: MessageId.make(`${name}:first`),
+          text: "first",
+          attachments: [],
+          modelSelection: initialSelection,
+          dispatchMode: { type: "start_immediately" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        yield* worker.drain();
+        yield* Fiber.join(running);
+        yield* worker.drain();
+        const before = yield* orchestrator.getThreadProjection(threadId);
+        const activeProviderThread = before.providerThreads.find(
+          (thread) => thread.id === before.thread.activeProviderThreadId,
+        );
+        assert.isDefined(activeProviderThread);
+
+        yield* orchestrator.dispatch({
+          type: "thread.model-selection.set",
+          commandId: CommandId.make(`${name}:switch`),
+          threadId,
+          modelSelection: replacementSelection,
+        });
+        const changed = yield* orchestrator.getThreadProjection(threadId);
+        assert.deepEqual(changedModels, [replacementSelection.model]);
+        assert.equal(changed.thread.modelSelection.model, replacementSelection.model);
+        assert.equal(changed.thread.activeProviderThreadId, activeProviderThread.id);
+        assert.equal(changed.runs[0]?.status, "running");
+
+        failNext = true;
+        const failed = yield* Effect.exit(
+          orchestrator.dispatch({
+            type: "thread.model-selection.set",
+            commandId: CommandId.make(`${name}:reject`),
+            threadId,
+            modelSelection: { ...replacementSelection, model: "third-model" },
+          }),
+        );
+        assert.equal(failed._tag, "Failure");
+        assert.deepEqual(changedModels, [replacementSelection.model, "third-model"]);
+        const after = yield* orchestrator.getThreadProjection(threadId);
+        assert.equal(after.thread.modelSelection.model, replacementSelection.model);
+        assert.equal(after.runs[0]?.status, "running");
+      }).pipe(Effect.provide(ProviderReplayHarness.layerWithRegistry({ name }, registry)));
+    }),
+  ),
+);
 
 it.live("retries a failed selection restart session open before completing", () =>
   Effect.scoped(

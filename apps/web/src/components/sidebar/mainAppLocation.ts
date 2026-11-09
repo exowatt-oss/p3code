@@ -9,7 +9,12 @@ export function isAppModalPage(pathname: string) {
 }
 
 export function isSidebarUtilityPage(pathname: string) {
-  return pathname.startsWith("/projects/") || pathname === "/pull-requests";
+  return (
+    pathname.startsWith("/projects/") ||
+    pathname === "/pull-requests" ||
+    // exowatt: P3's What's new page is a utility page, so Back returns to the app.
+    pathname === "/changelog"
+  );
 }
 
 // Pages the root route always renders without the app shell, so they are never

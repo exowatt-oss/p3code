@@ -27,6 +27,14 @@
       "types": "./src/composerPullRequestMatches.ts",
       "import": "./src/composerPullRequestMatches.ts"
     },
+    "./exowatt": {
+      "types": "./src/exowatt.ts",
+      "import": "./src/exowatt.ts"
+    },
+    "./productBranding": {
+      "types": "./src/productBranding.ts",
+      "import": "./src/productBranding.ts"
+    },
     "./themePalettes": {
       "types": "./src/themePalettes.ts",
       "import": "./src/themePalettes.ts"
@@ -50,6 +58,10 @@
     "./model": {
       "types": "./src/model.ts",
       "import": "./src/model.ts"
+    },
+    "./mcpUrl": {
+      "types": "./src/mcpUrl.ts",
+      "import": "./src/mcpUrl.ts"
     },
     "./advertisedEndpoint": {
       "types": "./src/advertisedEndpoint.ts",

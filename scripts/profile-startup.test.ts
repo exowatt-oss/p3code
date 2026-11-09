@@ -34,7 +34,7 @@ const decodeRunner = Schema.decodeUnknownSync(
   Schema.fromJsonString(Schema.Struct({ pid: Schema.Number, args: Schema.Array(Schema.String) })),
 );
 
-it("attributes ESM and CommonJS imports without changing module execution", () => {
+it.skipIf(Number(process.versions.node.split(".")[0]) < 26)("attributes ESM and CommonJS imports without changing module execution", () => {
   const directory = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-startup-profile-"));
   try {
     NodeFS.writeFileSync(NodePath.join(directory, "package.json"), '{"type":"module"}');

@@ -11,6 +11,7 @@ import {
   dismissVersionMismatch,
   isServerUpdateFailureDismissed,
   isVersionMismatchDismissed,
+  requiresExowattDesktopServerUpdate,
   resolveServerConfigVersionMismatch,
   resolveServerSelfUpdateCapability,
   supportsDesktopAppUpdate,
@@ -55,6 +56,8 @@ export function useAutoBalanceUpdateBanner(
       return [];
     const selfUpdate = resolveServerSelfUpdateCapability(environment.serverConfig);
     const desktopAppUpdate = supportsDesktopAppUpdate(environment.serverConfig);
+    const serverVersion = environment.serverConfig?.environment.serverVersion;
+    const targetVersion = state.status === "idle" ? mismatch!.clientVersion : state.targetVersion;
     return [
       {
         environmentId: environment.environmentId,
@@ -62,9 +65,13 @@ export function useAutoBalanceUpdateBanner(
         selfUpdate,
         installation: environment.serverConfig?.environment.capabilities.serverInstallation,
         desktopAppUpdate,
-        targetVersion: state.status === "idle" ? mismatch!.clientVersion : state.targetVersion,
+        targetVersion,
+        serverVersion,
         connected: environment.connection.phase === "connected",
-        remoteUpdate: selfUpdate !== null && (selfUpdate !== "desktop-managed" || desktopAppUpdate),
+        remoteUpdate:
+          selfUpdate !== null &&
+          (selfUpdate !== "desktop-managed" || desktopAppUpdate) &&
+          !requiresExowattDesktopServerUpdate({ selfUpdate, serverVersion, targetVersion }),
         state,
         dismissKey,
       },

@@ -1580,6 +1580,8 @@ const CHAT_MARKDOWN_COMPONENTS = {
     }
 
     const language = extractFenceLanguage(codeBlock.className);
+    // exowatt: P3's removed generated UI; older agent replies still carry these JSON fences.
+    if (language === "p3-ui") return null;
     if (
       mathEnabled &&
       language === "math" &&

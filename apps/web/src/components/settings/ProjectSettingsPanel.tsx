@@ -653,6 +653,8 @@ function ProjectDetail({
             </>
           ) : null}
         </SettingsSection>
+        {/* Upstream's project-scoped New threads rows (model, workspace). The
+            new-thread card's "Edit" lands here. */}
         <ProjectDefaultsSettings category="project" />
         <ProjectActionsSettings />
         {checkoutChoices}

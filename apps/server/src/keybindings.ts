@@ -311,6 +311,15 @@ const make = Effect.gen(function* () {
     });
   });
 
+  // exowatt: P3's dictation shortcut became upstream's `composer.dictation`; an old entry must
+  // not invalidate the file (that would also skip the startup default sync).
+  const renameRetiredP3Command = (entry: unknown): unknown =>
+    typeof entry === "object" &&
+    entry !== null &&
+    (entry as { readonly command?: unknown }).command === "composer.voiceInput"
+      ? { ...entry, command: "composer.dictation" }
+      : entry;
+
   const loadRuntimeCustomKeybindingsConfig = Effect.fn(function* (): Effect.fn.Return<
     {
       readonly keybindings: readonly KeybindingRule[];
@@ -335,7 +344,7 @@ const make = Effect.gen(function* () {
     const keybindings: KeybindingRule[] = [];
     const issues: ServerConfigIssue[] = [];
     for (const [index, entry] of decodedEntries.value.entries()) {
-      const decodedRule = decodeKeybindingRuleExit(entry);
+      const decodedRule = decodeKeybindingRuleExit(renameRetiredP3Command(entry));
       if (decodedRule._tag === "Failure") {
         const detail = Cause.pretty(decodedRule.cause);
         issues.push(invalidEntryIssue(index, detail));

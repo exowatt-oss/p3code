@@ -227,6 +227,22 @@ describe("scoped settings writes", () => {
     ]);
   });
 
+  it("writes linked-environment inbound access only to one selected environment", () => {
+    const allPlan = planScopedSettingsPatch(all, environments, {
+      exowattPeerInbound: "full-access",
+    });
+    expect(allPlan.serverWrites).toEqual([]);
+    expect(allPlan.unavailableReason).toBe("Choose one environment to change this setting.");
+
+    const one = resolveSettingsScope({ machine: "Server" }, [], environments);
+    const onePlan = planScopedSettingsPatch(one, environments, {
+      exowattPeerInbound: "full-access",
+    });
+    expect(onePlan.serverWrites.map((write) => [write.environmentId, write.patch])).toEqual([
+      [server.environmentId, { exowattPeerInbound: "full-access" }],
+    ]);
+  });
+
   it("writes an aggregate preference only to connected environments with loaded configuration", async () => {
     const persistServer = vi.fn().mockResolvedValue({ _tag: "Success" });
     const persistClient = vi.fn();
@@ -264,7 +280,7 @@ describe("scoped settings writes", () => {
     const unsupported = [
       {
         label: server.label,
-        message: "This environment does not support this setting. Update T3 Code on it.",
+        message: "This environment does not support this setting. Update P3 Code on it.",
       },
     ];
 

@@ -1,6 +1,5 @@
 import { Button } from "../ui/button";
-import type { ContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
-import { formatContextWindowTokens } from "~/lib/contextWindow";
+import { type ContextWindowSnapshotWithCost, formatContextWindowTokens } from "~/lib/contextWindow";
 import { Popover, PopoverPopup, PopoverTrigger } from "../ui/popover";
 import {
   formatContextWindowCompactionMessage,
@@ -20,7 +19,7 @@ function formatPercentage(value: number | null): string | null {
 }
 
 export function ContextWindowMeter(props: {
-  usage: ContextWindowSnapshot;
+  usage: ContextWindowSnapshotWithCost;
   modelDisplayName?: string | null;
   onCompact?: (() => void) | undefined;
   compactDisabled?: boolean | undefined;
@@ -139,9 +138,15 @@ export function ContextWindowMeter(props: {
           ) : null}
           {usage.cost != null ? (
             <div className="flex items-center justify-between gap-3 text-2xs leading-4">
-              <span className="text-secondary-label">Cost</span>
+              <span className="text-secondary-label">Est. cost</span>
               <span className="font-medium tabular-nums text-secondary-label">
                 {formatContextWindowCost(usage.cost)}
+                {usage.lastTurnCost ? (
+                  <span className="font-normal">
+                    {" "}
+                    · {formatContextWindowCost(usage.lastTurnCost)} last turn
+                  </span>
+                ) : null}
               </span>
             </div>
           ) : null}

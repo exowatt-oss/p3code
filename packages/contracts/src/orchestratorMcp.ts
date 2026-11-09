@@ -126,7 +126,17 @@ export const OrchestratorMcpTarget = Schema.Struct({
 });
 export type OrchestratorMcpTarget = typeof OrchestratorMcpTarget.Type;
 
-export const OrchestratorMcpRuntimeMode = Schema.Union([Schema.Literal("inherit"), RuntimeMode]);
+export const OrchestratorMcpRuntimeMode = Schema.Union([
+  Schema.Literal("inherit"),
+  RuntimeMode,
+]).annotate({
+  description:
+    "Runtime mode for the child, never broader than this thread's own mode. " +
+    "Omitted or 'inherit' inherits this thread's mode. phi has no 'auto' " +
+    "mode: a target provider without one (phi today) resolves a requested " +
+    "'auto' to this thread's own effective mode instead, never to " +
+    "'approval-required'.",
+});
 export type OrchestratorMcpRuntimeMode = typeof OrchestratorMcpRuntimeMode.Type;
 
 export const OrchestratorMcpInteractionMode = Schema.Union([

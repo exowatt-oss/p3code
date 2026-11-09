@@ -1,4 +1,5 @@
 import { ThreadHoverCard, ThreadHoverCardPopup } from "../ThreadHoverCard";
+import { resolveEnvironmentStripeColor } from "./environmentStripe";
 import { ThreadTerminalStatusButton } from "../ThreadStatusIndicators";
 import { discardComposerDraft } from "../../lib/discardComposerDraft";
 import { requestCustomSnooze } from "../CustomSnoozeDialog";
@@ -84,6 +85,7 @@ import {
   type SidebarDropVerb,
   resolveSidebarThreadStatus,
   resolveThreadLastVisitedAt,
+  resolveThreadStatusPill,
   shouldRecedeSidebarThread,
   resolveWorkingStartedAt,
   useRetainedValue,
@@ -117,6 +119,16 @@ import { Menu, MenuItem, MenuItemDetail, MenuPopup, MenuSeparator, MenuTrigger }
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { MiddleTruncate } from "../ui/middle-truncate";
 import { useThreadHasUnsentDraft } from "../../composerDraftStore";
+// exowatt: P3 row additions (compact density, nested subagents, lineage provenance).
+import { ExowattSidebarCompactLead } from "../exowatt/ExowattSidebarCompactLead";
+import { exowattCompactPullRequestCount } from "../exowatt/exowattSidebarDensity";
+import {
+  ExowattSidebarChildChip,
+  ExowattSidebarChildList,
+  type ExowattSidebarRowNesting,
+} from "../exowatt/ExowattSidebarChildThreads";
+import { ExowattSidebarRelationshipChip } from "../exowatt/ExowattSidebarRelationshipChip";
+import type { ExowattSidebarOrigin } from "../exowatt/exowattSidebarProvenance";
 
 // The fields thread rows show. Provider status pushes refresh `checkedAt`,
 // status and auth on every provider; leaving those out keeps each
@@ -240,8 +252,10 @@ function SidebarThreadTooltip({
   branchMismatch,
   terminalStatus,
   terminalProcessCount,
+  compactPullRequestCount,
 }: {
   thread: SidebarThreadSummary;
+  compactPullRequestCount?: number | undefined;
   project: ProjectFaviconProject | null;
   projectDisplayName: string | null;
   environmentLabel: string | null;
@@ -294,6 +308,14 @@ function SidebarThreadTooltip({
           <div className="flex min-w-0 items-center gap-2">
             <GitBranchIcon className="size-3 shrink-0 stroke-muted-foreground" />
             <MiddleTruncate value={thread.branch} className="flex" />
+          </div>
+        ) : null}
+        {compactPullRequestCount !== undefined && thread.worktreePath ? (
+          <div className="min-w-0 truncate text-foreground/75">Worktree: {thread.worktreePath}</div>
+        ) : null}
+        {compactPullRequestCount !== undefined && compactPullRequestCount > 0 ? (
+          <div className="text-foreground/75">
+            {compactPullRequestCount} pull request{compactPullRequestCount === 1 ? "" : "s"}
           </div>
         ) : null}
         {branchMismatch ? (
@@ -537,6 +559,8 @@ type SidebarThreadRowProps = {
   // "folder-multiline" adds the card's branch and PR line under it.
   variant: "card" | "slim" | "folder" | "folder-multiline";
   navigationParent?: string | undefined;
+  exowattCompact: boolean;
+  exowattProjectPrefix: string | null;
   variantAction: SidebarSweepAction;
   settlementSupported: boolean;
   snoozeSupported: boolean;
@@ -562,6 +586,8 @@ type SidebarThreadRowProps = {
   scratchMachineLabel: string | null;
   project: EnvironmentProject | null;
   projectDisplayName: string | null;
+  /** Project section already supplies this label; retain it in the tooltip. */
+  exowattHideProjectLabel?: boolean;
   providerEntryByInstanceId: ReadonlyMap<string, SidebarProviderEntry>;
   timestampFormat: TimestampFormat;
   onThreadClick: (event: ReactMouseEvent, threadRef: ScopedThreadRef) => void;
@@ -585,6 +611,9 @@ type SidebarThreadRowProps = {
   onUnpin: (threadRef: ScopedThreadRef) => void;
   onAcknowledgeWoke: (threadRef: ScopedThreadRef, visitedAt: string) => void;
   onFileDropThreads?: ((threadRef: ScopedThreadRef, files: File[]) => void) | undefined;
+  // exowatt: nested subagents ("+N" chip and the expanded child list).
+  exowattNesting?: ExowattSidebarRowNesting | undefined;
+  exowattOrigin?: ExowattSidebarOrigin | undefined;
 };
 
 // Mounted only while renaming, so each rename starts uncommitted.
@@ -706,7 +735,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     : null;
 
   const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
-  const status = resolveSidebarThreadStatus(thread);
+  // exowatt: a nested subagent's request already shows on its own row and on
+  // the parent's "+N" chip, so the parent's status stays its own.
+  const status = resolveSidebarThreadStatus(
+    props.exowattNesting ? { ...thread, pendingSubagentRequest: null } : thread,
+  );
   const lastVisitedDate = lastVisitedAt === undefined ? null : parseTimestampDate(lastVisitedAt);
   const wokeAtDate = props.wokeAt === null ? null : parseTimestampDate(props.wokeAt);
   const isWoke =
@@ -804,6 +837,18 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     : thread.modelSelection.model;
 
   const isRemote = thread.environmentId !== props.currentEnvironmentId;
+  const environmentStripeColor = resolveEnvironmentStripeColor(
+    thread.environmentId,
+    props.currentEnvironmentId,
+  );
+  const environmentStripe = environmentStripeColor ? (
+    <span
+      aria-hidden
+      data-testid="sidebar-row-environment-stripe"
+      className="pointer-events-none absolute inset-y-0 left-0 z-20 w-0.5"
+      style={{ backgroundColor: environmentStripeColor }}
+    />
+  ) : null;
   const showsScratchMachine = !thread.branch && props.scratchMachineLabel !== null;
 
   const detailsTooltip = (
@@ -821,6 +866,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       branchMismatch={branchMismatch}
       terminalStatus={terminalStatus}
       terminalProcessCount={terminalProcessCount}
+      compactPullRequestCount={
+        props.exowattCompact
+          ? exowattCompactPullRequestCount(thread, pr || currentLinkedPr ? 1 : 0)
+          : undefined
+      }
     />
   );
 
@@ -1141,7 +1191,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     !showsScratchMachine &&
     prBadge === null &&
     diff === null &&
-    runningTerminalIds.length === 0;
+    runningTerminalIds.length === 0 &&
+    // exowatt: the "+N" chip and the "via" chip sit on the meta line.
+    props.exowattNesting === undefined &&
+    props.exowattOrigin === undefined;
   const metaLine = metaLineEmpty ? null : (
     <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-secondary-label text-xs">
       {thread.branch ? (
@@ -1163,6 +1216,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       ) : (
         <span className="flex-1" />
       )}
+      {/* exowatt: nested subagents and lineage provenance. */}
+      {props.exowattNesting ? <ExowattSidebarChildChip nesting={props.exowattNesting} /> : null}
+      <ExowattSidebarRelationshipChip origin={props.exowattOrigin} onNavigate={onThreadActivate} />
       {terminalStatusIcon}
       {prBadge}
       {diff ? (
@@ -1219,6 +1275,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 aria-label={accessibility.label}
                 aria-current={accessibility.current}
                 data-testid={inFolder ? "sidebar-row-folder" : "sidebar-row-slim"}
+                data-exowatt-compact-row={props.exowattCompact || undefined}
                 aria-busy={isRegeneratingTitle || undefined}
                 className={cn(
                   rowSurfaceClassName,
@@ -1235,10 +1292,26 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               />
             }
           >
+            {environmentStripe}
             {/* `contents` keeps one-line rows a single flex row. */}
             <div className={multiline ? "flex h-6 min-w-0 items-center gap-2.5" : "contents"}>
               {accessibleTitle}
-              {inFolder ? null : (
+              {inFolder ? null : props.exowattCompact ? (
+                <ExowattSidebarCompactLead
+                  status={topStatus}
+                  planReady={resolveThreadStatusPill({ thread })?.label === "Plan Ready"}
+                  harness={
+                    providerEntry ? (
+                      <SidebarProviderStack
+                        thread={thread}
+                        providerEntryByInstanceId={props.providerEntryByInstanceId}
+                      />
+                    ) : props.project ? (
+                      <ProjectFavicon project={props.project} className="size-3.5" />
+                    ) : null
+                  }
+                />
+              ) : (
                 <span
                   className={cn(
                     "flex shrink-0 items-center transition-opacity",
@@ -1252,7 +1325,22 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 </span>
               )}
               {draftIndicator}
+              {props.exowattCompact && props.exowattProjectPrefix ? (
+                <span
+                  data-exowatt-project-prefix=""
+                  className="max-w-18 shrink-0 truncate text-3xs font-medium text-sidebar-muted-foreground/65"
+                >
+                  {props.exowattProjectPrefix}
+                </span>
+              ) : null}
               {title}
+              {/* exowatt: lineage provenance; multiline folder rows carry it on the meta line. */}
+              {multiline ? null : (
+                <ExowattSidebarRelationshipChip
+                  origin={props.exowattOrigin}
+                  onNavigate={onThreadActivate}
+                />
+              )}
               {multiline ? titleLineIcons : null}
               {pinIndicator}
               {multiline ? null : terminalStatusIcon}
@@ -1260,6 +1348,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 <span role="status" className="sr-only">
                   Regenerating title
                 </span>
+              ) : null}
+              {/* exowatt: nested subagents. */}
+              {props.exowattNesting && !multiline ? (
+                <ExowattSidebarChildChip nesting={props.exowattNesting} />
               ) : null}
               {sortable?.isDragging ? (
                 dragDestination
@@ -1388,6 +1480,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           </TooltipTrigger>
           {detailsTooltip}
         </Tooltip>
+        {/* exowatt: expanded subagents ride inside the parent's row. */}
+        {props.exowattNesting && !sortable?.isDragging ? (
+          <ExowattSidebarChildList nesting={props.exowattNesting} onOpenChild={onThreadActivate} />
+        ) : null}
       </li>
     );
   }
@@ -1425,6 +1521,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           }
         >
           {accessibleTitle}
+          {environmentStripe}
           <div
             className={cn(
               "relative z-10 h-[4.875rem] px-(--sidebar-row-content-inset) py-(--sidebar-content-inset)",
@@ -1439,7 +1536,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               {/* Left of the status slot, the pin would slide when hover swaps the
                 label for the wider row controls. */}
               {pinIndicator}
-              {props.projectDisplayName ? (
+              {props.projectDisplayName && !props.exowattHideProjectLabel ? (
                 <span
                   className={cn("min-w-0 flex-1 truncate font-normal text-secondary-label text-xs")}
                 >
@@ -1590,6 +1687,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         </TooltipTrigger>
         {detailsTooltip}
       </Tooltip>
+      {/* exowatt: expanded subagents ride inside the parent's row. */}
+      {props.exowattNesting && !sortable?.isDragging ? (
+        <ExowattSidebarChildList nesting={props.exowattNesting} onOpenChild={onThreadActivate} />
+      ) : null}
     </li>
   );
 });

@@ -1,0 +1,13 @@
+[skills]
+disabled = ["legacy-skill"]
+
+[plugins]
+disabled = ["legacy-plugin"]
+
+[mcp_servers.search]
+url = "https://mcp.example.com"
+
+[mcp_servers.local]
+command = "uvx"
+args = ["example-server"]
+env = { API_KEY = "${API_KEY}" }

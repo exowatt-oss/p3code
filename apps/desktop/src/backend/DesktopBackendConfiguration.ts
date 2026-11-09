@@ -241,6 +241,7 @@ interface SharedBootstrapInput {
   readonly bootstrapToken: string;
   readonly bootstrapSecret: string;
   readonly observabilitySettings: BackendObservabilitySettings;
+  readonly harnessEnvironment: Record<string, string> | undefined;
 }
 
 type WslPreflightRuntime =
@@ -518,6 +519,9 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
         onSome: (resourceMonitorPath) => ({ resourceMonitorPath }),
       }),
       ...buildObservabilityFragment(input.observabilitySettings),
+      ...(input.harnessEnvironment === undefined
+        ? {}
+        : { harnessEnvironment: input.harnessEnvironment }),
     };
 
     return {
@@ -753,10 +757,15 @@ export const make = Effect.gen(function* () {
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(DesktopEnvironment.DesktopEnvironment, environment),
     );
+    // exowatt: the full login-shell capture, so harness children (Phi) keep
+    // login-shell-only MCP credentials on GUI launches. Waits for shell discovery,
+    // since startup no longer blocks on it and the capture is never cached.
+    const harnessEnvironment = yield* shellEnvironment.harnessEnvironment;
     return {
       bootstrapToken,
       bootstrapSecret,
       observabilitySettings,
+      harnessEnvironment,
     } satisfies SharedBootstrapInput;
   });
 

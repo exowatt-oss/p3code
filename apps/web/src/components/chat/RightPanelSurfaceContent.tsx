@@ -24,6 +24,7 @@ import { PullRequestDetailPanel } from "../pullRequest/PullRequestDetailPanel";
 import { PullRequestDetailGhost } from "../pullRequest/PullRequestGhosts";
 import { PullRequestsUnavailableState } from "../pullRequest/PullRequestsUnavailableState";
 import { ThreadPullRequestsPanel } from "../pullRequest/ThreadPullRequestsPanel";
+import type { HubPanelProps } from "../hub/HubPanel";
 
 const PreviewPanel = lazy(() =>
   import("../preview/PreviewPanel").then((module) => ({ default: module.PreviewPanel })),
@@ -33,6 +34,10 @@ const DevicePanel = lazy(() =>
   import("../device/DevicePanel").then((module) => ({ default: module.DevicePanel })),
 );
 const FilePreviewPanel = lazy(() => import("../files/FilePreviewPanel"));
+// exowatt: P3's Hub, the thread's agents, tasks, outputs, sources and connectors.
+const HubPanel = lazy(() =>
+  import("../hub/HubPanel").then((module) => ({ default: module.HubPanel })),
+);
 
 type RightPanelTerminalProps = Omit<
   PersistentThreadTerminalPanelProps,
@@ -59,6 +64,14 @@ interface RightPanelFileProps {
   readonly onPendingChange: (relativePath: string, pending: boolean) => void;
 }
 
+/** exowatt: the Hub reads v2 thread state, so it renders only for server threads. */
+export interface RightPanelHubProps {
+  readonly available: boolean;
+  readonly onOpenFile: HubPanelProps["onOpenFile"];
+  readonly onOpenDiff: HubPanelProps["onOpenDiff"];
+  readonly pathRoots: HubPanelProps["pathRoots"];
+}
+
 export function RightPanelSurfaceContent(props: {
   readonly surface: RightPanelSurface | null;
   readonly activeSurfaceId: string | null;
@@ -79,6 +92,7 @@ export function RightPanelSurfaceContent(props: {
   readonly pullRequest: RightPanelPullRequestProps;
   readonly files: RightPanelFileProps;
   readonly sideChatParentPanel: SideChatParentPanel;
+  readonly hub: RightPanelHubProps;
 }) {
   const { surface, threadRef, visible, onCloseSurface } = props;
   if (surface === null) return null;
@@ -124,7 +138,7 @@ export function RightPanelSurfaceContent(props: {
         return (
           <PullRequestsUnavailableState
             title="Pull requests unavailable"
-            error="Update this environment's T3 Code server to browse pull requests."
+            error="Update this environment's P3 Code server to browse pull requests."
           />
         );
       }
@@ -179,6 +193,19 @@ export function RightPanelSurfaceContent(props: {
           parentPanel={props.sideChatParentPanel}
           onClose={() => onCloseSurface(surface)}
         />
+      );
+    case "hub":
+      if (!props.hub.available) return null;
+      return (
+        <Suspense fallback={null}>
+          <HubPanel
+            key={scopedThreadKey(threadRef)}
+            threadRef={threadRef}
+            onOpenFile={props.hub.onOpenFile}
+            onOpenDiff={props.hub.onOpenDiff}
+            pathRoots={props.hub.pathRoots}
+          />
+        </Suspense>
       );
     case "device":
       return (

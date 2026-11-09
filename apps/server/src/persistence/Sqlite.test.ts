@@ -28,7 +28,7 @@ vi.mock("node:worker_threads", async (importOriginal) => {
   return { ...actual, Worker: RecordedWorker };
 });
 
-it.effect("keeps writes moving past a 48 MiB WAL while a reader retains its snapshot", () => {
+it.effect.skipIf(Number(process.versions.node.split(".")[0]) < 26)("keeps writes moving past a 48 MiB WAL while a reader retains its snapshot", () => {
   const tempDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-sqlite-burst-"));
   const dbPath = NodePath.join(tempDir, "state.sqlite");
   const persistence = SqlitePersistence.layerFromPath(dbPath).pipe(

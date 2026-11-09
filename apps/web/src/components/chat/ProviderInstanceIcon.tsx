@@ -30,11 +30,16 @@ const PROVIDER_TEXT_COLOR_BY_PROVIDER: Partial<Record<ProviderDriverKind, string
   [ProviderDriverKind.make("antigravity")]: "text-[#5b87bf]",
 };
 
+// exowatt: Phi's φ icon comes from its entry in the client-runtime provider registry.
+function providerPackageIcon(driverKind: ProviderDriverKind) {
+  return providerClients.get(driverKind)?.icon;
+}
+
 export function providerTextColor(driverKind: ProviderDriverKind): {
   readonly className?: string;
   readonly style?: CSSProperties;
 } {
-  const icon = providerClients.get(driverKind)?.icon;
+  const icon = providerPackageIcon(driverKind);
   if (icon) {
     return {
       className: "text-(--icon-light) dark:text-(--icon-dark)",
@@ -72,7 +77,7 @@ export const ProviderInstanceIcon = memo(function ProviderInstanceIcon(props: {
   indicatorBackground?: string;
 }) {
   const Icon = PROVIDER_ICON_BY_PROVIDER[props.driverKind] ?? null;
-  const packageIcon = providerClients.get(props.driverKind)?.icon;
+  const packageIcon = providerPackageIcon(props.driverKind);
   const indicatorBackground = props.indicatorBackground ?? "var(--card)";
   const accentColor = normalizeProviderAccentColor(props.accentColor);
   const accentStyle = accentColor

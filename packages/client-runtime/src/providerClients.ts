@@ -3,6 +3,7 @@ import {
   ClaudeSettings,
   CodexSettings,
   isProviderDriverKind,
+  PhiSettings,
   ProviderDriverKind,
 } from "@t3tools/contracts";
 import { acpRegistryClient } from "@t3tools/provider-acp-registry/client";
@@ -14,7 +15,7 @@ import { grokClient } from "@t3tools/provider-grok/client";
 import { kiroClient } from "@t3tools/provider-kiro/client";
 import { museClient } from "@t3tools/provider-muse/client";
 import { openCodeClient } from "@t3tools/provider-opencode/client";
-import { piClient } from "@t3tools/provider-pi/client";
+import { phiIcon, piClient } from "@t3tools/provider-pi/client";
 
 // OpenRouter's Ink and Cloud glyphs from https://openrouter.ai/brand.
 export const openRouterIcon: ProviderIcon = {
@@ -28,6 +29,14 @@ export const openRouterIcon: ProviderIcon = {
 };
 
 export const providerClients = makeProviderClientRegistry([
+  // exowatt: Phi, P3's default harness, listed first; it draws its own φ icon.
+  {
+    driverKind: ProviderDriverKind.make("phi"),
+    label: "Phi",
+    badgeLabel: "Stable Adapter",
+    settingsSchema: PhiSettings,
+    icon: phiIcon,
+  },
   {
     driverKind: ProviderDriverKind.make("codex"),
     label: "Codex",

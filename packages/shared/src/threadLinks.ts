@@ -7,12 +7,18 @@ import { DEFAULT_HOSTED_APP_URL } from "./connectAuth.ts";
 export const THREAD_LINK_PROTOCOL = "t3-thread";
 const V1_PREFIX = `${THREAD_LINK_PROTOCOL}://v1/`;
 const V2_PREFIX = `${THREAD_LINK_PROTOCOL}://v2/`;
+/**
+ * exowatt: P3 agents and the tool `link` field write thread links as
+ * `p3://thread/<percent-encoded id>`; they read like a v1 link (no environment).
+ */
+export const P3_THREAD_LINK_PROTOCOL = "p3";
+const P3_PREFIX = `${P3_THREAD_LINK_PROTOCOL}://thread/`;
 const HOSTED_PREFIX = `${DEFAULT_HOSTED_APP_URL}/threads/`;
 const HOSTED_SEGMENT = "[A-Za-z0-9_%-]+";
 const HOSTED_LINK = `${HOSTED_PREFIX.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}${HOSTED_SEGMENT}/${HOSTED_SEGMENT}`;
 // Code comes first in the alternation so a link written inside a code span or fence is skipped.
 const THREAD_LINK_OUTSIDE_CODE = new RegExp(
-  String.raw`(?<fence>(\`{3,}|~{3,})[\s\S]*?(?:\2|$))|(?<span>(\`+)[^\n]*?\4)|\[(?<label>[^\]\n]*)\]\((?<href>t3-thread:\/\/v[12]\/[^\s)]+|${HOSTED_LINK})\)|<(?<autolink>t3-thread:\/\/v[12]\/[^\s<>]+|${HOSTED_LINK})>|(?<bare>${HOSTED_LINK})(?![\w%/?#-])`,
+  String.raw`(?<fence>(\`{3,}|~{3,})[\s\S]*?(?:\2|$))|(?<span>(\`+)[^\n]*?\4)|\[(?<label>[^\]\n]*)\]\((?<href>t3-thread:\/\/v[12]\/[^\s)]+|p3:\/\/thread\/[^\s)/]+|${HOSTED_LINK})\)|<(?<autolink>t3-thread:\/\/v[12]\/[^\s<>]+|p3:\/\/thread\/[^\s<>/]+|${HOSTED_LINK})>|(?<bare>${HOSTED_LINK})(?![\w%/?#-])`,
   "g",
 );
 
@@ -52,12 +58,25 @@ function parseHostedThreadLink(href: string): ThreadLink | null {
   }
 }
 
+/** exowatt: P3 encodes the id as one path segment, so it is percent-decoded. */
+function parseP3ThreadLink(href: string): ThreadLink | null {
+  const segment = href.slice(P3_PREFIX.length);
+  if (segment.length === 0 || segment.includes("/")) return null;
+  try {
+    const threadId = Option.getOrNull(decodeThreadId(decodeURIComponent(segment)));
+    return threadId === null ? null : { environmentId: null, threadId };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The ids as written. Thread ids can hold percent escapes of their own, so they are not decoded,
  * except in a hosted link, which escapes them itself.
  */
 export function parseThreadLinkHref(href: string): ThreadLink | null {
   if (href.startsWith(HOSTED_PREFIX)) return parseHostedThreadLink(href);
+  if (href.startsWith(P3_PREFIX)) return parseP3ThreadLink(href);
   if (href.startsWith(V1_PREFIX)) {
     const threadId = Option.getOrNull(decodeThreadId(href.slice(V1_PREFIX.length)));
     return threadId === null ? null : { environmentId: null, threadId };
@@ -116,14 +135,35 @@ function threadLinkHref(link: ThreadLink): string {
     : `${V2_PREFIX}${link.environmentId}/${link.threadId}`;
 }
 
+/** exowatt: the id as one path segment; `encodeURIComponent` leaves `)` literal, which ends a link. */
+function p3ThreadLinkHref(threadId: string): string {
+  const segment = encodeURIComponent(threadId).replace(
+    /[!'()*]/gu,
+    (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+  return `${P3_PREFIX}${segment}`;
+}
+
 const linkLabel = (label: string | undefined) =>
   label
     ?.replace(/[[\]\\\r\n]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 
-/** Without a label, an autolink: clients show the thread's current title. */
+/**
+ * Without a label, an autolink: clients show the thread's current title. exowatt: a ref with no
+ * environment (a thread here) is written in P3's `p3://thread/<id>` form, which agents are told
+ * to use; a ref naming an environment keeps upstream's `t3-thread://v2` link to that machine.
+ */
 export function formatThreadLink(ref: ThreadLink, label?: string): string {
+  if (ref.environmentId !== null) return formatUpstreamThreadLink(ref, label);
+  const cleaned = linkLabel(label);
+  const href = p3ThreadLinkHref(ref.threadId);
+  return cleaned ? `[${cleaned}](${href})` : `<${href}>`;
+}
+
+/** Upstream's `t3-thread://` form; relabeling keeps it so a v1 link stays v1. */
+function formatUpstreamThreadLink(ref: ThreadLink, label?: string): string {
   const cleaned = linkLabel(label);
   return cleaned ? `[${cleaned}](${threadLinkHref(ref)})` : `<${threadLinkHref(ref)}>`;
 }
@@ -140,7 +180,11 @@ export function formatHostedThreadLink(
 }
 
 export function hasThreadLinks(markdown: string): boolean {
-  return markdown.includes(`${THREAD_LINK_PROTOCOL}://v`) || markdown.includes(HOSTED_PREFIX);
+  return (
+    markdown.includes(`${THREAD_LINK_PROTOCOL}://v`) ||
+    markdown.includes(P3_PREFIX) ||
+    markdown.includes(HOSTED_PREFIX)
+  );
 }
 
 /** Every thread the markdown's links can name, so their titles are keyed reads. */
@@ -209,7 +253,7 @@ export function relabelThreadLinks(
       if (label !== undefined && written.environmentId === null) return undefined;
       return label?.trim() || unknownThreadLinkLabel(written, messageEnvironmentId);
     }
-    return formatThreadLink(
+    return formatUpstreamThreadLink(
       { environmentId: written.environmentId, threadId },
       current.trim() || label || threadId,
     );

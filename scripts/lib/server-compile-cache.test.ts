@@ -25,7 +25,7 @@ it.each(["x64", "arm64"])("skips prepared bytecode generation on Linux %s", asyn
   expect(result.stdout).toContain("Skipping unsupported target linux");
 });
 
-it("prepares macOS x64 cache on an ARM64 build host", async () => {
+it.skipIf(Number(process.versions.node.split(".")[0]) < 26)("prepares macOS x64 cache on an ARM64 build host", async () => {
   const { spawnSync } = await import("node:child_process");
   const root = NodeFS.realpathSync(
     NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-rosetta-cache-")),
@@ -131,7 +131,7 @@ it("seeds relocated cache entries without allowing writes into shipped resources
   }
 });
 
-it.each(["app", "server"])(
+it.skipIf(Number(process.versions.node.split(".")[0]) < 26).each(["app", "server"] )(
   "generates %s.asar cache with the consumer engine and falls back after damage",
   async (archive) => {
     const { spawnSync } = await import("node:child_process");

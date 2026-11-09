@@ -184,6 +184,22 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   },
   resolveSshPasswordPrompt: (requestId, password) =>
     ipcRenderer.invoke(IpcChannels.RESOLVE_SSH_PASSWORD_PROMPT_CHANNEL, { requestId, password }),
+  exowattStopRemoteStockServer: (target) =>
+    ipcRenderer.invoke(IpcChannels.EXOWATT_STOP_REMOTE_STOCK_SERVER_CHANNEL, target),
+  exowattOpenLogsDirectory: () =>
+    ipcRenderer.invoke(IpcChannels.EXOWATT_OPEN_LOGS_DIRECTORY_CHANNEL, undefined),
+  onExowattRemoteServerEvent: (listener) => {
+    const wrappedListener = (_event: Electron.IpcRendererEvent, event: unknown) => {
+      if (typeof event !== "object" || event === null) return;
+      listener(event as Parameters<typeof listener>[0]);
+    };
+    ipcRenderer.on(IpcChannels.EXOWATT_REMOTE_SERVER_EVENT_CHANNEL, wrappedListener);
+    return () => {
+      ipcRenderer.removeListener(IpcChannels.EXOWATT_REMOTE_SERVER_EVENT_CHANNEL, wrappedListener);
+    };
+  },
+  exowattPushDevServer: (target) =>
+    ipcRenderer.invoke(IpcChannels.EXOWATT_PUSH_DEV_SERVER_CHANNEL, target),
   getServerExposureState: () => ipcRenderer.invoke(IpcChannels.GET_SERVER_EXPOSURE_STATE_CHANNEL),
   setServerExposureMode: (mode) =>
     ipcRenderer.invoke(IpcChannels.SET_SERVER_EXPOSURE_MODE_CHANNEL, mode),
@@ -226,6 +242,16 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     ipcRenderer.on(IpcChannels.MENU_ACTION_CHANNEL, wrappedListener);
     return () => {
       ipcRenderer.removeListener(IpcChannels.MENU_ACTION_CHANNEL, wrappedListener);
+    };
+  },
+  onNavigationHistory: (listener) => {
+    const wrappedListener = (_event: Electron.IpcRendererEvent, direction: unknown) => {
+      if (direction !== "back" && direction !== "forward") return;
+      listener(direction);
+    };
+    ipcRenderer.on(IpcChannels.NAVIGATE_HISTORY_CHANNEL, wrappedListener);
+    return () => {
+      ipcRenderer.removeListener(IpcChannels.NAVIGATE_HISTORY_CHANNEL, wrappedListener);
     };
   },
   onSnapShotEvent: (listener) => {
@@ -286,6 +312,7 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     install: () => ipcRenderer.invoke(IpcChannels.CLI_COMMAND_INSTALL_CHANNEL),
     uninstall: () => ipcRenderer.invoke(IpcChannels.CLI_COMMAND_UNINSTALL_CHANNEL),
   },
+  restartApplication: () => ipcRenderer.invoke(IpcChannels.RESTART_APPLICATION_CHANNEL),
   onUpdateState: (listener) => {
     const wrappedListener = (_event: Electron.IpcRendererEvent, state: unknown) => {
       if (typeof state !== "object" || state === null) return;

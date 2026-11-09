@@ -217,7 +217,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
       }),
     ).pipe(Effect.provide(layerServerSettings())),
   );
-  it.effect("migrates saved token delivery to paragraph buffering without resetting settings", () =>
+  // exowatt: P3 keeps token delivery, so saved "token" values survive decoding.
+  it.effect("keeps saved token delivery without resetting settings", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;
       const fs = yield* FileSystem.FileSystem;
@@ -236,10 +237,10 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("server settings"
       );
 
       const settings = yield* service.getSettings;
-      assert.equal(settings.responseStreamingMode, "paragraph");
+      assert.equal(settings.responseStreamingMode, "token");
       assert.isFalse(settings.enableAgentBrowserAccess);
       assert.deepEqual(settings.projectSettingsOverrides, {
-        [ProjectId.make("legacy")]: { responseStreamingMode: "paragraph", defaultAutoPull: true },
+        [ProjectId.make("legacy")]: { responseStreamingMode: "token", defaultAutoPull: true },
         [ProjectId.make("buffered")]: { responseStreamingMode: "turn" },
         [ProjectId.make("inherited")]: { defaultAutoPull: false },
       });

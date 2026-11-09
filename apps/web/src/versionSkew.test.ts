@@ -13,11 +13,12 @@ import {
   isServerUpdateFailureDismissed,
   isVersionMismatchDismissed,
   manualServerUpdateCommand,
+  requiresExowattDesktopServerUpdate,
   resolveVersionMismatch,
 } from "./versionSkew";
 
 const MISMATCH_HINT =
-  "Version mismatch. Try syncing the client and server to the same T3 Code version.";
+  "Version mismatch. Try syncing the client and server to the same P3 Code version.";
 
 describe("versionSkew", () => {
   it("updates only the proven npm prefix and safely quotes its path", () => {
@@ -27,6 +28,34 @@ describe("versionSkew", () => {
     expect(
       manualServerUpdateCommand("0.0.45", { kind: "npm-global", prefix: "/opt/maria's node" }),
     ).toBe("npm install --global --prefix '/opt/maria'\\''s node' t3@0.0.45");
+  });
+
+  it("never offers stock t3 to a P3 server or for a P3 build", () => {
+    const stock = { selfUpdate: null, serverVersion: "0.0.45", targetVersion: "0.0.46" };
+    expect(requiresExowattDesktopServerUpdate(stock)).toBe(false);
+    expect(
+      requiresExowattDesktopServerUpdate({ ...stock, serverVersion: "0.0.45-exowatt.12" }),
+    ).toBe(true);
+    expect(
+      requiresExowattDesktopServerUpdate({ ...stock, serverVersion: "0.0.0-dev.61e39a3" }),
+    ).toBe(true);
+    expect(requiresExowattDesktopServerUpdate({ ...stock, targetVersion: "0.1.1-exowatt.3" })).toBe(
+      true,
+    );
+    expect(
+      requiresExowattDesktopServerUpdate({
+        ...stock,
+        selfUpdate: "respawn",
+        serverVersion: "0.1.1-exowatt.2",
+      }),
+    ).toBe(true);
+    expect(
+      requiresExowattDesktopServerUpdate({
+        selfUpdate: "desktop-managed",
+        serverVersion: "0.1.1-exowatt.2",
+        targetVersion: "0.1.1-exowatt.3",
+      }),
+    ).toBe(false);
   });
   beforeEach(() => {
     branding.APP_VERSION = "0.0.34";

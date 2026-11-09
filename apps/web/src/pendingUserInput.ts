@@ -19,7 +19,10 @@ export function projectPendingUserInputAnswer(
   const recordsById = new Map(threadContexts.map((record) => [record.contextId, record]));
   return replaceComposerContextReferences(answer, (reference) => {
     const record = reference.kind === "thread" ? recordsById.get(reference.contextId) : undefined;
-    return record ? formatThreadLink(record, reference.label) : reference.source;
+    // exowatt: agents get P3's `p3://thread/<id>` link, as before the rebase.
+    return record
+      ? formatThreadLink({ environmentId: null, threadId: record.threadId }, reference.label)
+      : reference.source;
   });
 }
 
@@ -30,6 +33,13 @@ export function threadContextsReferencedByAnswer(
 ) {
   const referencedIds = new Set(collectInlineContextIds(answer));
   return threadContexts.filter((record) => referencedIds.has(record.contextId));
+}
+
+/** Message-mode questions accept an ordinary next message, so context inserts stay available. */
+export function canInsertWithPendingUserInputs(
+  inputs: ReadonlyArray<{ readonly responseMode?: "message" }>,
+): boolean {
+  return inputs.every((input) => input.responseMode === "message");
 }
 
 export interface PendingUserInputProgress {

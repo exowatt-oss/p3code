@@ -388,6 +388,54 @@ import {
   ProjectCloneSubscribeInput,
 } from "./projectClone.ts";
 import {
+  ExowattHarnessConfigError,
+  ExowattHarnessAssetInventoryResult,
+  ExowattHarnessAssetListInput,
+  ExowattHarnessAssetToggleInput,
+  ExowattHarnessMcpAddInput,
+  ExowattHarnessMcpConnectInput,
+  ExowattHarnessMcpConnectResult,
+  ExowattHarnessMcpInventoryResult,
+  ExowattHarnessMcpListInput,
+  ExowattHarnessMcpStatusInput,
+  ExowattHarnessMcpStatusResult,
+  ExowattHarnessMcpToggleInput,
+  ExowattHarnessMcpToggleResult,
+} from "./exowattHarnessConfig.ts";
+import {
+  ExowattConnectorAutoConnectReport,
+  ExowattConnectorError,
+  ExowattConnectorIssueAgentTokenInput,
+  ExowattConnectorIssueAgentTokenResult,
+} from "./exowattConnectorCatalog.ts";
+import {
+  ExowattFeadsAckInput,
+  ExowattFeadsAckResult,
+  ExowattFeadsAgentwatchSnapshot,
+  ExowattFeadsConfigureInput,
+  ExowattFeadsError,
+  ExowattFeadsInboxSnapshot,
+  ExowattFeadsMyIssuesSnapshot,
+  ExowattFeadsStatus,
+  ExowattFeadsTestResult,
+} from "./exowattFeads.ts";
+// exowatt: the thread Hub's pin/hide/add overlay.
+import {
+  ExowattThreadHubDeleteInput,
+  ExowattThreadHubDeleteResult,
+  ExowattThreadHubError,
+  ExowattThreadHubGetInput,
+  ExowattThreadHubSnapshot,
+  ExowattThreadHubUpsertInput,
+  ExowattThreadHubUpsertResult,
+} from "./exowattThreadHub.ts";
+// exowatt: a Font Awesome icon per thread.
+import {
+  ExowattThreadIconsError,
+  ExowattThreadIconsStreamEvent,
+  ExowattThreadIconsSubscribeInput,
+} from "./exowattThreadIcons.ts";
+import {
   SourceControlCloneRepositoryInput,
   SourceControlCloneRepositoryResult,
   SourceControlDiscoveryResult,
@@ -540,6 +588,28 @@ export const WS_METHODS = {
   serverReportClientActivity: "server.reportClientActivity",
   serverGetUsageSummary: "server.getUsageSummary",
   serverRefreshUsageRates: "server.refreshUsageRates",
+  exowattHarnessMcpList: "exowatt.harnessMcp.list",
+  exowattHarnessMcpAdd: "exowatt.harnessMcp.add",
+  exowattHarnessMcpToggle: "exowatt.harnessMcp.toggle",
+  exowattHarnessMcpStatus: "exowatt.harnessMcp.status",
+  exowattHarnessMcpConnect: "exowatt.harnessMcp.connect",
+  exowattHarnessAssetList: "exowatt.harnessAsset.list",
+  exowattHarnessAssetToggle: "exowatt.harnessAsset.toggle",
+  exowattConnectorsIssueAgentToken: "exowatt.connectors.issueAgentToken",
+  exowattConnectorsReconcile: "exowatt.connectors.reconcile",
+  exowattFeadsStatus: "exowatt.feads.status",
+  exowattFeadsConfigure: "exowatt.feads.configure",
+  exowattFeadsClear: "exowatt.feads.clear",
+  exowattFeadsTest: "exowatt.feads.test",
+  exowattFeadsAgentwatch: "exowatt.feads.agentwatch",
+  exowattFeadsMyIssues: "exowatt.feads.myIssues",
+  exowattFeadsInbox: "exowatt.feads.inbox",
+  exowattFeadsAckNotifications: "exowatt.feads.ackNotifications",
+  exowattThreadHubGet: "exowatt.threadHub.get",
+  exowattThreadHubSubscribe: "exowatt.threadHub.subscribe",
+  exowattThreadHubUpsert: "exowatt.threadHub.upsert",
+  exowattThreadHubDelete: "exowatt.threadHub.delete",
+  exowattThreadIconsSubscribe: "exowatt.threadIcons.subscribe",
 
   scheduledTasksSubscribe: "scheduledTasks.subscribe",
   scheduledTasksUpsert: "scheduledTasks.upsert",
@@ -840,7 +910,160 @@ const WsServerUpdateSettingsRpc = Rpc.make(WS_METHODS.serverUpdateSettings, {
   error: Schema.Union([ServerSettingsError, EnvironmentAuthorizationError]),
 });
 
-const WsServerDiscoverSourceControlRpc = Rpc.make(WS_METHODS.serverDiscoverSourceControl, {
+export const WsExowattHarnessMcpListRpc = Rpc.make(WS_METHODS.exowattHarnessMcpList, {
+  payload: ExowattHarnessMcpListInput,
+  success: ExowattHarnessMcpInventoryResult,
+  error: Schema.Union([ExowattHarnessConfigError, EnvironmentAuthorizationError]),
+});
+
+export const WsExowattHarnessMcpAddRpc = Rpc.make(WS_METHODS.exowattHarnessMcpAdd, {
+  payload: ExowattHarnessMcpAddInput,
+  success: ExowattHarnessMcpInventoryResult,
+  error: Schema.Union([ExowattHarnessConfigError, EnvironmentAuthorizationError]),
+});
+
+export const WsExowattHarnessMcpToggleRpc = Rpc.make(WS_METHODS.exowattHarnessMcpToggle, {
+  payload: ExowattHarnessMcpToggleInput,
+  success: ExowattHarnessMcpToggleResult,
+  error: Schema.Union([ExowattHarnessConfigError, EnvironmentAuthorizationError]),
+});
+
+export const WsExowattHarnessMcpStatusRpc = Rpc.make(WS_METHODS.exowattHarnessMcpStatus, {
+  payload: ExowattHarnessMcpStatusInput,
+  success: ExowattHarnessMcpStatusResult,
+  error: EnvironmentAuthorizationError,
+});
+
+export const WsExowattHarnessMcpConnectRpc = Rpc.make(WS_METHODS.exowattHarnessMcpConnect, {
+  payload: ExowattHarnessMcpConnectInput,
+  success: ExowattHarnessMcpConnectResult,
+  error: EnvironmentAuthorizationError,
+});
+
+export const WsExowattHarnessAssetListRpc = Rpc.make(WS_METHODS.exowattHarnessAssetList, {
+  payload: ExowattHarnessAssetListInput,
+  success: ExowattHarnessAssetInventoryResult,
+  error: Schema.Union([ExowattHarnessConfigError, EnvironmentAuthorizationError]),
+});
+
+export const WsExowattHarnessAssetToggleRpc = Rpc.make(WS_METHODS.exowattHarnessAssetToggle, {
+  payload: ExowattHarnessAssetToggleInput,
+  success: ExowattHarnessAssetInventoryResult,
+  error: Schema.Union([ExowattHarnessConfigError, EnvironmentAuthorizationError]),
+});
+
+export const WsExowattConnectorsIssueAgentTokenRpc = Rpc.make(
+  WS_METHODS.exowattConnectorsIssueAgentToken,
+  {
+    payload: ExowattConnectorIssueAgentTokenInput,
+    success: ExowattConnectorIssueAgentTokenResult,
+    error: Schema.Union([ExowattConnectorError, EnvironmentAuthorizationError]),
+  },
+);
+
+// Auto-connect: same reconciliation the server runs at startup and every
+// twelve hours, on demand from the Customize page's "Reconnect now".
+export const WsExowattConnectorsReconcileRpc = Rpc.make(WS_METHODS.exowattConnectorsReconcile, {
+  payload: Schema.Struct({}),
+  success: ExowattConnectorAutoConnectReport,
+  error: Schema.Union([ExowattConnectorError, EnvironmentAuthorizationError]),
+});
+
+// feads integration: the status stream emits the current snapshot on subscribe
+// and again whenever the configuration, the resolved actor, or the poller's
+// last result changes. Commands return the resulting status so the settings
+// card never has to guess.
+export const WsExowattFeadsStatusRpc = Rpc.make(WS_METHODS.exowattFeadsStatus, {
+  payload: Schema.Struct({}),
+  success: ExowattFeadsStatus,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
+export const WsExowattFeadsConfigureRpc = Rpc.make(WS_METHODS.exowattFeadsConfigure, {
+  payload: ExowattFeadsConfigureInput,
+  success: ExowattFeadsStatus,
+  error: Schema.Union([ExowattFeadsError, EnvironmentAuthorizationError]),
+});
+
+export const WsExowattFeadsClearRpc = Rpc.make(WS_METHODS.exowattFeadsClear, {
+  payload: Schema.Struct({}),
+  success: ExowattFeadsStatus,
+  error: Schema.Union([ExowattFeadsError, EnvironmentAuthorizationError]),
+});
+
+export const WsExowattFeadsTestRpc = Rpc.make(WS_METHODS.exowattFeadsTest, {
+  payload: Schema.Struct({}),
+  success: ExowattFeadsTestResult,
+  error: Schema.Union([ExowattFeadsError, EnvironmentAuthorizationError]),
+});
+
+// The three feeds the server-side poller republishes: current snapshot on
+// subscribe, then one message per poll that changed something.
+export const WsExowattFeadsAgentwatchRpc = Rpc.make(WS_METHODS.exowattFeadsAgentwatch, {
+  payload: Schema.Struct({}),
+  success: ExowattFeadsAgentwatchSnapshot,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
+export const WsExowattFeadsMyIssuesRpc = Rpc.make(WS_METHODS.exowattFeadsMyIssues, {
+  payload: Schema.Struct({}),
+  success: ExowattFeadsMyIssuesSnapshot,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
+export const WsExowattFeadsInboxRpc = Rpc.make(WS_METHODS.exowattFeadsInbox, {
+  payload: Schema.Struct({}),
+  success: ExowattFeadsInboxSnapshot,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
+
+export const WsExowattFeadsAckNotificationsRpc = Rpc.make(WS_METHODS.exowattFeadsAckNotifications, {
+  payload: ExowattFeadsAckInput,
+  success: ExowattFeadsAckResult,
+  error: Schema.Union([ExowattFeadsError, EnvironmentAuthorizationError]),
+});
+
+// exowatt: the thread Hub overlay. The subscription emits the thread's entries
+// on subscribe and again after every change to that thread, from any client or
+// the `thread_hub_pin` MCP tool.
+export const WsExowattThreadHubGetRpc = Rpc.make(WS_METHODS.exowattThreadHubGet, {
+  payload: ExowattThreadHubGetInput,
+  success: ExowattThreadHubSnapshot,
+  error: Schema.Union([ExowattThreadHubError, EnvironmentAuthorizationError]),
+});
+
+export const WsExowattThreadHubSubscribeRpc = Rpc.make(WS_METHODS.exowattThreadHubSubscribe, {
+  payload: ExowattThreadHubGetInput,
+  success: ExowattThreadHubSnapshot,
+  error: Schema.Union([ExowattThreadHubError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
+export const WsExowattThreadHubUpsertRpc = Rpc.make(WS_METHODS.exowattThreadHubUpsert, {
+  payload: ExowattThreadHubUpsertInput,
+  success: ExowattThreadHubUpsertResult,
+  error: Schema.Union([ExowattThreadHubError, EnvironmentAuthorizationError]),
+});
+
+export const WsExowattThreadHubDeleteRpc = Rpc.make(WS_METHODS.exowattThreadHubDelete, {
+  payload: ExowattThreadHubDeleteInput,
+  success: ExowattThreadHubDeleteResult,
+  error: Schema.Union([ExowattThreadHubError, EnvironmentAuthorizationError]),
+});
+
+// exowatt: every thread's Font Awesome icon, as a snapshot then upserts.
+export const WsExowattThreadIconsSubscribeRpc = Rpc.make(WS_METHODS.exowattThreadIconsSubscribe, {
+  payload: ExowattThreadIconsSubscribeInput,
+  success: ExowattThreadIconsStreamEvent,
+  error: Schema.Union([ExowattThreadIconsError, EnvironmentAuthorizationError]),
+  stream: true,
+});
+
+export const WsServerDiscoverSourceControlRpc = Rpc.make(WS_METHODS.serverDiscoverSourceControl, {
   payload: Schema.Struct({}),
   success: SourceControlDiscoveryResult,
   error: EnvironmentAuthorizationError,
@@ -2042,6 +2265,28 @@ export const WsRpcGroup = RpcGroup.make(
   WsPeerLinksLinkRpc,
   WsPeerLinksUnlinkRpc,
   WsPeerLinksAnswerRequestRpc,
+  WsExowattHarnessMcpListRpc,
+  WsExowattHarnessMcpAddRpc,
+  WsExowattHarnessMcpToggleRpc,
+  WsExowattHarnessMcpStatusRpc,
+  WsExowattHarnessMcpConnectRpc,
+  WsExowattHarnessAssetListRpc,
+  WsExowattHarnessAssetToggleRpc,
+  WsExowattConnectorsIssueAgentTokenRpc,
+  WsExowattConnectorsReconcileRpc,
+  WsExowattFeadsStatusRpc,
+  WsExowattFeadsConfigureRpc,
+  WsExowattFeadsClearRpc,
+  WsExowattFeadsTestRpc,
+  WsExowattFeadsAgentwatchRpc,
+  WsExowattFeadsMyIssuesRpc,
+  WsExowattFeadsInboxRpc,
+  WsExowattFeadsAckNotificationsRpc,
+  WsExowattThreadHubGetRpc, // exowatt
+  WsExowattThreadHubSubscribeRpc, // exowatt
+  WsExowattThreadHubUpsertRpc, // exowatt
+  WsExowattThreadHubDeleteRpc, // exowatt
+  WsExowattThreadIconsSubscribeRpc, // exowatt
   WsServerDiscoverSourceControlRpc,
   WsServerSearchAcpRegistryRpc,
   WsServerPrepareAcpRegistryAgentRpc,

@@ -1,4 +1,10 @@
 import { SessionPermissions } from "./SessionPermissions";
+import {
+  DEFAULT_REMOTE_HEALTH_CHECK_TIMEOUT_SECONDS,
+  RemoteHealthCheckTimeoutSeconds,
+} from "@t3tools/contracts/settings";
+import * as Schema from "effect/Schema";
+import { useClientSettings, updateClientSettings } from "../../hooks/useSettings";
 import { ChevronRightIcon, EllipsisIcon } from "lucide-react";
 import { useAtomValue } from "@effect/atom-react";
 import { type ReactNode, useState } from "react";
@@ -35,8 +41,15 @@ import {
   resolveTailscaleServeBaseUrl,
 } from "./ConnectionsSettings.logic";
 import { settingsScopeEnvironmentLabel } from "./settingsScopeAxis";
-import { SettingsPageContainer, SettingsRow, SettingsSection } from "./settingsLayout";
+import {
+  SettingResetButton,
+  SettingsPageContainer,
+  SettingsRow,
+  SettingsSection,
+} from "./settingsLayout";
 import { ManagedByOrganization } from "../ManagedPolicy";
+import { ExowattAgentToolsSection } from "./IntegrationsSettings";
+import { ExowattFeadsSettingsSection } from "./ExowattFeadsSettings";
 import { LocalEnvironmentSetting } from "./LocalEnvironmentSetting";
 import { searchableSetting } from "./settingsSearch";
 import { EnvironmentIconMenu } from "./EnvironmentIconPicker";
@@ -78,6 +91,7 @@ import { type ServerClientSessionRecord } from "~/environments/primary";
 import { isDesktopLocalConnectionTarget } from "~/connection/desktopLocal";
 import { useUiStateStore } from "~/uiStateStore";
 import {
+  requiresExowattDesktopServerUpdate,
   resolveServerConfigVersionMismatch,
   resolveServerSelfUpdateCapability,
   supportsDesktopAppUpdate,
@@ -239,6 +253,60 @@ function AccessSettings() {
   );
 }
 
+const isRemoteHealthCheckTimeoutSeconds = Schema.is(RemoteHealthCheckTimeoutSeconds);
+
+function RemoteHealthCheckTimeoutSetting() {
+  const timeout = useClientSettings((settings) => settings.remoteHealthCheckTimeoutSeconds);
+  return (
+    <SettingsRow
+      {...searchableSetting("remote-health-check-timeout")}
+      description="SSH health checks allow at least 5 seconds for a response over a forwarded connection. Increase this on slower networks. Applies on the next connection attempt."
+      resetAction={
+        timeout > DEFAULT_REMOTE_HEALTH_CHECK_TIMEOUT_SECONDS ? (
+          <SettingResetButton
+            label="remote health-check timeout"
+            onClick={() =>
+              updateClientSettings({
+                remoteHealthCheckTimeoutSeconds: DEFAULT_REMOTE_HEALTH_CHECK_TIMEOUT_SECONDS,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Select
+          value={String(Math.max(timeout, DEFAULT_REMOTE_HEALTH_CHECK_TIMEOUT_SECONDS))}
+          onValueChange={(value) => {
+            const seconds = Number(value);
+            if (isRemoteHealthCheckTimeoutSeconds(seconds)) {
+              updateClientSettings({ remoteHealthCheckTimeoutSeconds: seconds });
+            }
+          }}
+        >
+          <SelectTrigger aria-label="Remote health-check timeout" className="w-40">
+            <SelectValue>
+              {timeout <= DEFAULT_REMOTE_HEALTH_CHECK_TIMEOUT_SECONDS
+                ? "5 seconds (default)"
+                : `${timeout} seconds`}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectPopup>
+            {RemoteHealthCheckTimeoutSeconds.literals
+              .filter((seconds) => seconds >= DEFAULT_REMOTE_HEALTH_CHECK_TIMEOUT_SECONDS)
+              .map((seconds) => (
+                <SelectItem key={seconds} value={String(seconds)}>
+                  {seconds === DEFAULT_REMOTE_HEALTH_CHECK_TIMEOUT_SECONDS
+                    ? "5 seconds (default)"
+                    : `${seconds} seconds`}
+                </SelectItem>
+              ))}
+          </SelectPopup>
+        </Select>
+      }
+    />
+  );
+}
+
 function ConnectionsSettingsContent({
   view,
   accessEnvironmentId,
@@ -293,7 +361,12 @@ function ConnectionsSettingsContent({
         environment.connection.phase !== "connected" ||
         isDesktopLocalConnectionTarget(environment.entry.target) ||
         selfUpdate === null ||
-        (selfUpdate === "desktop-managed" && !desktopAppUpdate)
+        (selfUpdate === "desktop-managed" && !desktopAppUpdate) ||
+        requiresExowattDesktopServerUpdate({
+          selfUpdate,
+          serverVersion: mismatch.serverVersion,
+          targetVersion: mismatch.clientVersion,
+        })
       ) {
         return [];
       }
@@ -305,6 +378,7 @@ function ConnectionsSettingsContent({
           installation: environment.serverConfig?.environment.capabilities.serverInstallation,
           desktopAppUpdate,
           targetVersion: mismatch.clientVersion,
+          serverVersion: mismatch.serverVersion,
         },
       ];
     },
@@ -985,7 +1059,7 @@ function ConnectionsSettingsContent({
         {desktopWslState.enabled ? (
           <SettingsRow
             title="WSL only"
-            description="Run only the WSL backend. T3 Code restarts when this changes."
+            description="Run only the WSL backend. P3 Code restarts when this changes."
             className="bg-muted/20 pl-7 sm:pl-8"
             control={
               <Switch
@@ -1215,6 +1289,7 @@ function ConnectionsSettingsContent({
                       }
                       desktopAppUpdate={supportsDesktopAppUpdate(primaryServerConfig)}
                       targetVersion={primaryVersionMismatch.clientVersion}
+                      serverVersion={primaryVersionMismatch.serverVersion}
                       label={
                         primaryServerUpdateState.status === "failed"
                           ? "Retry update"
@@ -1325,8 +1400,8 @@ function ConnectionsSettingsContent({
                 </AlertDialogTitle>
                 <AlertDialogDescription>
                   {pendingDesktopServerExposureMode === "network-accessible"
-                    ? "Let your other devices connect to T3 Code over the network. Pair devices to give them access. T3 Code will restart."
-                    : "Devices connected over your local network will disconnect. Existing tunnels, such as T3 Connect or Tailscale HTTPS, keep working. T3 Code will restart."}
+                    ? "Let your other devices connect to P3 Code over the network. Pair devices to give them access. P3 Code will restart."
+                    : "Devices connected over your local network will disconnect. Existing tunnels, such as T3 Connect or Tailscale HTTPS, keep working. P3 Code will restart."}
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -1382,15 +1457,15 @@ function ConnectionsSettingsContent({
                 <AlertDialogDescription>
                   {pendingWslChange?.kind === "disable"
                     ? pendingWslChange.wasWslOnly
-                      ? "T3 Code will restart on the Windows backend. Threads and projects opened against WSL stay safe inside the distro and become available again when you re-enable WSL."
-                      : "The WSL backend will stop. Threads and projects opened against WSL stay safe inside the distro, but they'll be unavailable in T3 Code until you re-enable WSL."
+                      ? "P3 Code will restart on the Windows backend. Threads and projects opened against WSL stay safe inside the distro and become available again when you re-enable WSL."
+                      : "The WSL backend will stop. Threads and projects opened against WSL stay safe inside the distro, but they'll be unavailable in P3 Code until you re-enable WSL."
                     : pendingWslChange?.kind === "distro"
-                      ? "T3 Code will restart the WSL backend on the new distro. Sessions still running on the current distro will be interrupted."
+                      ? "P3 Code will restart the WSL backend on the new distro. Sessions still running on the current distro will be interrupted."
                       : pendingWslChange?.kind === "enable"
                         ? "Run the WSL backend alongside the Windows one, or stop the Windows backend and use only WSL? You can change this later from Settings."
                         : pendingWslChange?.nextValue
-                          ? "T3 Code will restart and start only the WSL backend. Your Windows-side projects won't be accessible until you turn this off again."
-                          : "T3 Code will restart and bring the Windows backend back up alongside WSL."}
+                          ? "P3 Code will restart and start only the WSL backend. Your Windows-side projects won't be accessible until you turn this off again."
+                          : "P3 Code will restart and bring the Windows backend back up alongside WSL."}
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -1476,7 +1551,7 @@ function ConnectionsSettingsContent({
               <AlertDialogHeader>
                 <AlertDialogTitle>Disable Tailscale HTTPS?</AlertDialogTitle>
                 <AlertDialogDescription>
-                  T3 Code will restart the local backend without Tailscale Serve.
+                  P3 Code will restart the local backend without Tailscale Serve.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -1514,7 +1589,7 @@ function ConnectionsSettingsContent({
               <DialogHeader>
                 <DialogTitle>Set up Tailscale HTTPS?</DialogTitle>
                 <DialogDescription>
-                  T3 Code will restart the local backend with Tailscale Serve enabled and ask
+                  P3 Code will restart the local backend with Tailscale Serve enabled and ask
                   Tailscale to proxy HTTPS traffic to this backend.
                 </DialogDescription>
               </DialogHeader>
@@ -1587,7 +1662,16 @@ function ConnectionsSettingsContent({
     </>
   );
 
-  if (showsAccess) return <SettingsPageContainer>{primarySettings}</SettingsPageContainer>;
+  if (showsAccess)
+    return (
+      <SettingsPageContainer>
+        {primarySettings}
+        {/* exowatt: P3's agent tools and the feads card (both primary-environment settings) sit
+            on Access now that Settings › Integrations is gone. */}
+        {isPrimaryAccess ? <ExowattAgentToolsSection /> : null}
+        {isPrimaryAccess ? <ExowattFeadsSettingsSection /> : null}
+      </SettingsPageContainer>
+    );
 
   return (
     <SettingsPageContainer>
@@ -1615,6 +1699,7 @@ function ConnectionsSettingsContent({
           </div>
         }
       >
+        {desktopBridge ? <RemoteHealthCheckTimeoutSetting /> : null}
         {listedEnvironments.map((environment) => (
           <SavedBackendListRow
             key={environment.environmentId}

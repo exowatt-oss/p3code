@@ -114,6 +114,41 @@ import * as CheckpointDiffQuery from "./checkpointing/CheckpointDiffQuery.ts";
 import * as NativeChildWorkQuery from "./orchestration-v2/NativeChildWorkQuery.ts";
 import * as ServerConfig from "./config.ts";
 import * as EnvironmentTheme from "./environmentTheme.ts";
+import * as ExowattHarnessConfig from "./exowattHarnessConfig.ts";
+import * as ExowattConnectorAutoConnect from "./exowattConnectorAutoConnect.ts";
+import * as ExowattConnectors from "./exowattConnectors.ts";
+import * as FeadsBridge from "./feads/FeadsBridge.ts";
+import * as FeadsService from "./feads/FeadsService.ts";
+// exowatt: the thread Hub's pin/hide/add overlay.
+import * as ExowattThreadHubStore from "./exowattThreadHub/ExowattThreadHubStore.ts";
+import { makeThreadHubRpcHandlers } from "./exowattThreadHub/rpcHandlers.ts";
+// exowatt: P3's WebSocket RPCs, served from their own handler layer.
+import {
+  WsExowattHarnessMcpListRpc,
+  WsExowattHarnessMcpAddRpc,
+  WsExowattHarnessMcpToggleRpc,
+  WsExowattHarnessMcpStatusRpc,
+  WsExowattHarnessMcpConnectRpc,
+  WsExowattHarnessAssetListRpc,
+  WsExowattHarnessAssetToggleRpc,
+  WsExowattConnectorsIssueAgentTokenRpc,
+  WsExowattConnectorsReconcileRpc,
+  WsExowattFeadsStatusRpc,
+  WsExowattFeadsConfigureRpc,
+  WsExowattFeadsClearRpc,
+  WsExowattFeadsTestRpc,
+  WsExowattFeadsAgentwatchRpc,
+  WsExowattFeadsMyIssuesRpc,
+  WsExowattFeadsInboxRpc,
+  WsExowattFeadsAckNotificationsRpc,
+  WsExowattThreadHubGetRpc,
+  WsExowattThreadHubSubscribeRpc,
+  WsExowattThreadHubUpsertRpc,
+  WsExowattThreadHubDeleteRpc,
+  WsExowattThreadIconsSubscribeRpc,
+} from "@t3tools/contracts";
+// exowatt: per-thread Font Awesome icons.
+import * as ExowattThreadIconStore from "./exowattThreadIcons/ExowattThreadIconStore.ts";
 import * as Keybindings from "./keybindings.ts";
 import * as ExternalLauncher from "./process/externalLauncher.ts";
 import * as ThreadManagementService from "./orchestration-v2/ThreadManagementService.ts";
@@ -260,7 +295,11 @@ import * as VcsDriverRegistry from "./vcs/VcsDriverRegistry.ts";
 import * as VcsProjectConfig from "./vcs/VcsProjectConfig.ts";
 import * as PairingGrantStore from "./auth/PairingGrantStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
-import { failEnvironmentAuthInvalid, failEnvironmentInternal } from "./auth/http.ts";
+import {
+  failEnvironmentAuthInvalid,
+  failEnvironmentInternal,
+  failEnvironmentPeerSessionMcpOnly,
+} from "./auth/http.ts";
 import { isNetworkPath } from "@t3tools/shared/path";
 import * as RelayClient from "@t3tools/shared/relayClient";
 import {
@@ -662,12 +701,65 @@ const PROVIDER_STATUS_DEBOUNCE_MS = 200;
 
 // Middleware added later wraps middleware added earlier, so instrumentation wraps authorization.
 const ServerWsRpcGroup = WsRpcGroup.middleware(RpcInstrumentation);
+// exowatt: P3's RPCs get their own handler layer. One handler record for the
+// whole group pushes its type past the compiler's instantiation depth.
+const ExowattWsRpcGroup = RpcGroup.make(
+  WsExowattHarnessMcpListRpc,
+  WsExowattHarnessMcpAddRpc,
+  WsExowattHarnessMcpToggleRpc,
+  WsExowattHarnessMcpStatusRpc,
+  WsExowattHarnessMcpConnectRpc,
+  WsExowattHarnessAssetListRpc,
+  WsExowattHarnessAssetToggleRpc,
+  WsExowattConnectorsIssueAgentTokenRpc,
+  WsExowattConnectorsReconcileRpc,
+  WsExowattFeadsStatusRpc,
+  WsExowattFeadsConfigureRpc,
+  WsExowattFeadsClearRpc,
+  WsExowattFeadsTestRpc,
+  WsExowattFeadsAgentwatchRpc,
+  WsExowattFeadsMyIssuesRpc,
+  WsExowattFeadsInboxRpc,
+  WsExowattFeadsAckNotificationsRpc,
+  WsExowattThreadHubGetRpc,
+  WsExowattThreadHubSubscribeRpc,
+  WsExowattThreadHubUpsertRpc,
+  WsExowattThreadHubDeleteRpc,
+  WsExowattThreadIconsSubscribeRpc,
+);
+const ServerExowattWsRpcGroup = ExowattWsRpcGroup.middleware(RpcInstrumentation);
+// Every WebSocket RPC except P3's, which `layerExowattWsRpc` serves.
+export const WsCoreRpcGroup = WsRpcGroup.omit(
+  WsExowattHarnessMcpListRpc._tag,
+  WsExowattHarnessMcpAddRpc._tag,
+  WsExowattHarnessMcpToggleRpc._tag,
+  WsExowattHarnessMcpStatusRpc._tag,
+  WsExowattHarnessMcpConnectRpc._tag,
+  WsExowattHarnessAssetListRpc._tag,
+  WsExowattHarnessAssetToggleRpc._tag,
+  WsExowattConnectorsIssueAgentTokenRpc._tag,
+  WsExowattConnectorsReconcileRpc._tag,
+  WsExowattFeadsStatusRpc._tag,
+  WsExowattFeadsConfigureRpc._tag,
+  WsExowattFeadsClearRpc._tag,
+  WsExowattFeadsTestRpc._tag,
+  WsExowattFeadsAgentwatchRpc._tag,
+  WsExowattFeadsMyIssuesRpc._tag,
+  WsExowattFeadsInboxRpc._tag,
+  WsExowattFeadsAckNotificationsRpc._tag,
+  WsExowattThreadHubGetRpc._tag,
+  WsExowattThreadHubSubscribeRpc._tag,
+  WsExowattThreadHubUpsertRpc._tag,
+  WsExowattThreadHubDeleteRpc._tag,
+  WsExowattThreadIconsSubscribeRpc._tag,
+);
+const ServerWsCoreRpcGroup = WsCoreRpcGroup.middleware(RpcInstrumentation);
 
 // RpcGroup.toLayer derives each handler's requirements by scanning every RPC in
 // the group, so its type cost grows with handlers × RPCs. Near 200 methods that
 // crosses TypeScript's instantiation limit and the layer's requirements degrade to
 // `any`, so the handlers are registered as two disjoint, smaller groups.
-type ServerWsRpc = RpcGroup.Rpcs<typeof ServerWsRpcGroup>;
+type ServerWsRpc = RpcGroup.Rpcs<typeof ServerWsCoreRpcGroup>; // exowatt: without P3's RPCs
 const SPLIT_WS_RPC_PREFIXES = ["server", "pullRequests", "provider", "orchestration"] as const;
 type SplitWsRpc = Extract<
   ServerWsRpc,
@@ -677,7 +769,7 @@ const isSplitWsRpc = (rpc: ServerWsRpc): rpc is SplitWsRpc =>
   SPLIT_WS_RPC_PREFIXES.some((prefix) => rpc._tag.startsWith(`${prefix}.`));
 const isOtherWsRpc = (rpc: ServerWsRpc): rpc is Exclude<ServerWsRpc, SplitWsRpc> =>
   !isSplitWsRpc(rpc);
-const serverWsRpcs = Array.from(ServerWsRpcGroup.requests.values());
+const serverWsRpcs = Array.from(ServerWsCoreRpcGroup.requests.values());
 const SplitWsRpcGroup = RpcGroup.make(...serverWsRpcs.filter(isSplitWsRpc));
 const OtherWsRpcGroup = RpcGroup.make(...serverWsRpcs.filter(isOtherWsRpc));
 // Replaying each intervening event costs a shell refetch; past this gap a
@@ -2039,7 +2131,7 @@ export const layerWsRpc = (
         return yield* mutateProjectWithClone(projectService, projectCloneTracker, mutation);
       });
 
-      const handlers = ServerWsRpcGroup.of({
+      const handlers = ServerWsCoreRpcGroup.of({
         [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
           Effect.annotateCurrentSpan({
             "orchestration_v2.command_id": command.commandId,
@@ -3487,6 +3579,96 @@ export const layerWsRpc = (
     }),
   );
 
+// exowatt: handlers for P3's RPCs (harness MCP config, connectors, feads, the
+// thread Hub and thread icons).
+const layerExowattWsRpc = ServerExowattWsRpcGroup.toLayer(
+  Effect.gen(function* () {
+    const config = yield* ServerConfig.ServerConfig;
+    const serverSettings = yield* ServerSettings.ServerSettingsService;
+    const exowattAutoConnect = yield* ExowattConnectorAutoConnect.ExowattConnectorAutoConnect;
+    const feads = yield* FeadsService.FeadsService;
+    const feadsBridge = yield* FeadsBridge.FeadsBridge;
+    const threadHub = makeThreadHubRpcHandlers(yield* ExowattThreadHubStore.ExowattThreadHubStore);
+    const threadIcons = yield* ExowattThreadIconStore.ExowattThreadIconStore;
+    const harnessCliOptions = serverSettings.getSettings.pipe(
+      Effect.map((settings) => ExowattHarnessConfig.harnessCliOptionsFromSettings(settings)),
+      Effect.orElseSucceed(() => ExowattHarnessConfig.harnessCliOptionsFromSettings(undefined)),
+    );
+    return ServerExowattWsRpcGroup.of({
+      [WS_METHODS.exowattHarnessMcpList]: (_input) => ExowattHarnessConfig.listHarnessMcpConfigs(),
+      [WS_METHODS.exowattHarnessMcpAdd]: (input) => ExowattHarnessConfig.addHarnessMcpServer(input),
+      [WS_METHODS.exowattHarnessMcpToggle]: (input) =>
+        serverSettings.getSettings.pipe(
+          Effect.map(ExowattHarnessConfig.phiBinaryPathFromSettings),
+          Effect.orElseSucceed(() => undefined),
+          Effect.flatMap((binaryPath) =>
+            ExowattHarnessConfig.toggleHarnessMcpServer(input, binaryPath),
+          ),
+        ),
+      [WS_METHODS.exowattHarnessMcpStatus]: (input) =>
+        harnessCliOptions.pipe(
+          Effect.flatMap(({ phiBinaryPath, claude, codex }) =>
+            ExowattHarnessConfig.getHarnessMcpRuntimeStatus(input, phiBinaryPath, claude, codex),
+          ),
+        ),
+      [WS_METHODS.exowattHarnessMcpConnect]: (input) =>
+        harnessCliOptions.pipe(
+          Effect.flatMap(({ phiBinaryPath, claude, codex }) =>
+            ExowattHarnessConfig.connectHarnessMcpServer(input, phiBinaryPath, claude, codex),
+          ),
+        ),
+      [WS_METHODS.exowattHarnessAssetList]: (input) =>
+        ExowattHarnessConfig.listHarnessAssets(input),
+      [WS_METHODS.exowattHarnessAssetToggle]: (input) =>
+        ExowattHarnessConfig.toggleHarnessAsset(input),
+      [WS_METHODS.exowattConnectorsIssueAgentToken]: (input) =>
+        ExowattConnectors.issueConnectorAgentToken({
+          payload: input,
+          serverRuntimeStatePath: config.serverRuntimeStatePath,
+        }),
+      [WS_METHODS.exowattConnectorsReconcile]: (_input) => exowattAutoConnect.reconcileNow,
+      [WS_METHODS.exowattFeadsStatus]: (_input) =>
+        Stream.unwrap(
+          Effect.map(feads.subscribeStatus, ({ latest, changes }) =>
+            Stream.concat(Stream.make(latest), changes),
+          ),
+        ),
+      [WS_METHODS.exowattFeadsConfigure]: (input) => feads.configure(input),
+      [WS_METHODS.exowattFeadsClear]: (_input) => feads.clear(),
+      [WS_METHODS.exowattFeadsTest]: (_input) => feads.test(),
+      [WS_METHODS.exowattFeadsAgentwatch]: (_input) =>
+        Stream.unwrap(
+          Effect.map(feadsBridge.subscribeAgentwatch, ({ latest, changes }) =>
+            Stream.concat(Stream.make(latest), changes),
+          ),
+        ),
+      [WS_METHODS.exowattFeadsMyIssues]: (_input) =>
+        Stream.unwrap(
+          Effect.map(feadsBridge.subscribeMyIssues, ({ latest, changes }) =>
+            Stream.concat(Stream.make(latest), changes),
+          ),
+        ),
+      [WS_METHODS.exowattFeadsInbox]: (_input) =>
+        Stream.unwrap(
+          Effect.map(feadsBridge.subscribeInbox, ({ latest, changes }) =>
+            Stream.concat(Stream.make(latest), changes),
+          ),
+        ),
+      [WS_METHODS.exowattFeadsAckNotifications]: (input) => feadsBridge.ackNotifications(input),
+      // exowatt: the thread Hub overlay (pin, hide, add by hand).
+      [WS_METHODS.exowattThreadHubGet]: (input) => threadHub[WS_METHODS.exowattThreadHubGet](input),
+      [WS_METHODS.exowattThreadHubSubscribe]: (input) =>
+        threadHub[WS_METHODS.exowattThreadHubSubscribe](input),
+      [WS_METHODS.exowattThreadHubUpsert]: (input) =>
+        threadHub[WS_METHODS.exowattThreadHubUpsert](input),
+      [WS_METHODS.exowattThreadHubDelete]: (input) =>
+        threadHub[WS_METHODS.exowattThreadHubDelete](input),
+      // exowatt: every thread's icon, as a snapshot then changes.
+      [WS_METHODS.exowattThreadIconsSubscribe]: (_input) => threadIcons.subscribe(),
+    });
+  }),
+);
+
 // Default socket-level Defect frames end every pending client request.
 export const WS_RPC_SERVER_OPTIONS = {
   disableTracing: true,
@@ -3502,6 +3684,9 @@ export const layer = Layer.unwrap(
     const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
     const peerLinks = yield* PeerLinks.PeerLinks;
     const peerLinkRequests = yield* PeerLinkRequests.PeerLinkRequests;
+    // exowatt: one Hub store for every connection, so its change feed spans clients.
+    const threadHubStore = yield* ExowattThreadHubStore.ExowattThreadHubStore;
+    const threadIconStore = yield* ExowattThreadIconStore.ExowattThreadIconStore; // exowatt
     const sql = yield* SqlClient.SqlClient;
     return HttpRouter.add(
       "GET",
@@ -3528,6 +3713,10 @@ export const layer = Layer.unwrap(
               EnvironmentAuth.serverAuthCredentialReason(error),
               EnvironmentAuth.serverAuthDpopFailureReason(error),
             ),
+          ),
+          Effect.catchIf(
+            EnvironmentAuth.isServerAuthPeerSessionMcpOnlyError,
+            failEnvironmentPeerSessionMcpOnly,
           ),
           Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
             failEnvironmentInternal("internal_error", error),
@@ -3565,12 +3754,15 @@ export const layer = Layer.unwrap(
           return httpEffect;
         }).pipe(
           Effect.provide(
-            layerWsRpc(
-              session,
-              clientAnalyticsProps,
-              serverBrowser,
-              reportProfiles,
-              readSettingsClient(url.value),
+            Layer.merge(
+              layerWsRpc(
+                session,
+                clientAnalyticsProps,
+                serverBrowser,
+                reportProfiles,
+                readSettingsClient(url.value),
+              ),
+              layerExowattWsRpc, // exowatt
             ).pipe(
               Layer.provideMerge(RpcSerialization.layerJson),
               // Handler-context reporters see only request defects, not server-wide defects.
@@ -3591,6 +3783,12 @@ export const layer = Layer.unwrap(
               ),
               Layer.provide(Layer.succeed(PeerLinks.PeerLinks, peerLinks)),
               Layer.provide(Layer.succeed(PeerLinkRequests.PeerLinkRequests, peerLinkRequests)),
+              Layer.provide(
+                Layer.succeed(ExowattThreadHubStore.ExowattThreadHubStore, threadHubStore),
+              ), // exowatt
+              Layer.provide(
+                Layer.succeed(ExowattThreadIconStore.ExowattThreadIconStore, threadIconStore),
+              ), // exowatt
               Layer.provide(
                 SourceControlDiscovery.layer.pipe(
                   Layer.provide(

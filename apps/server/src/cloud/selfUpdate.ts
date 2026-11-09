@@ -34,6 +34,10 @@ import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import { managedUpdateMirror, managedUpdateRefusal } from "../policy/managedUpdates.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import {
+  currentExowattP3ServerDetection,
+  exowattP3ServerRefusalReason,
+} from "./exowattP3Server.ts";
+import {
   ensurePinnedRuntimeInstalled,
   isUnpublishedRelease,
   pinnedRuntimeCommand,
@@ -180,12 +184,12 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
         );
       }
       return yield* failWith(
-        "This server is managed by the T3 Code desktop app on its machine; update the desktop app to update it.",
+        "This server is managed by the P3 Code desktop app on its machine; update the desktop app to update it.",
       );
     }
     if (capability === null) {
       return yield* failWith(
-        "Remote updates require the T3 Code background service. Run `t3 service install` on the server machine.",
+        "Remote updates require the P3 Code background service. Run `t3 service install` on the server machine.",
       );
     }
 
@@ -194,6 +198,14 @@ export const make = Effect.fn("cloud.server_self_update.make")(function* () {
     const targetVersion = input.targetVersion.trim();
     if (!isExactServiceVersion(targetVersion)) {
       return yield* failWith(`'${targetVersion}' is not an exact t3 version.`);
+    }
+    // Exowatt: pinnedRuntime refuses too, but fail here with the reason intact
+    // (the generic mapping below would hide it) and before any progress event.
+    const p3 = currentExowattP3ServerDetection();
+    if (p3.p3Server) {
+      const reason = exowattP3ServerRefusalReason(targetVersion, p3);
+      yield* Effect.logWarning(`Refusing server self-update: ${reason}`);
+      return yield* failWith(reason);
     }
     if (yield* Ref.getAndSet(inFlight, true)) {
       return yield* failWith("A server update is already in progress.");

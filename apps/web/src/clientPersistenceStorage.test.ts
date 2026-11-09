@@ -38,6 +38,34 @@ afterEach(() => {
 });
 
 describe("clientPersistenceStorage", () => {
+  it("persists client settings in browser storage", async () => {
+    getTestWindow();
+    const { readBrowserClientSettings, writeBrowserClientSettings } =
+      await import("./clientPersistenceStorage");
+    const settings = {
+      ...DEFAULT_CLIENT_SETTINGS,
+      timestampFormat: "24-hour" as const,
+      "exowatt.accent": "orchid" as const,
+      "exowatt.newThreadSunrise": false,
+      "exowatt.statusLightBlink": "strong" as const,
+      "exowatt.sidebarDensity": "compact" as const,
+      "exowatt.sidebarSort": "created_at" as const,
+    };
+
+    writeBrowserClientSettings(settings);
+
+    expect(readBrowserClientSettings()).toEqual(settings);
+    expect(JSON.parse(window.localStorage.getItem("t3code:client-settings:v1") ?? "{}")).toEqual(
+      expect.objectContaining({
+        "exowatt.accent": "orchid",
+        "exowatt.newThreadSunrise": false,
+        "exowatt.statusLightBlink": "strong",
+        "exowatt.sidebarDensity": "compact",
+        "exowatt.sidebarSort": "created_at",
+      }),
+    );
+  });
+
   it.each(["not-json", '{"wordWrap":"invalid"}'])(
     "does not treat invalid saved settings as absent: %s",
     async (value) => {

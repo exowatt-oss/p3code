@@ -15,7 +15,7 @@ Ordinary coding tasks need no T3 tools.
 - Given a thread id, \`t3_thread_read\` it before you answer about it.
 - Another machine: \`t3_environment_links\` lists linked ones. Pass its \`environmentId\` to a T3 tool to act there. Ids are then that machine's, so pass \`threadId\`.
 - A machine the user names that is not linked ("delegate this to my vps"): call \`t3_environment_link\` with a \`hint\` from their words. Never ask for a pairing code in chat.
-- In your reply, mention a thread by its \`link\`, verbatim. Never a plain title or bare id.
+- In your reply, mention a thread by its \`link\`, verbatim. No \`link\`: \`[title](p3://thread/<threadId>)\` with the exact ID (including \`thread:project:…\` and \`delegated-task\` IDs), percent-encoded as one URL path segment, including Markdown delimiters such as \`)\` (which \`encodeURIComponent\` leaves bare). Escape backslashes and square brackets in the title. Never a plain title or bare id. Link PRs with their full GitHub URLs, never bare PR numbers.
 - A login, token, PIN or pairing code only the user can give: call \`request_secret\`, not a chat ask or a handoff. Not for access you have. When asked only to schedule, \`schedule_task\` without running its prompt.
 - T3 tools may load late. Try the name once before you call it absent.`,
   `### Visuals and preview

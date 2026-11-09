@@ -62,6 +62,7 @@ import {
   reconcileRowsDraft,
   seedRowsDraft,
 } from "./ProviderSettingsForm";
+import { ExowattPhiDisplaySection } from "./ExowattPhiDisplaySection";
 import { ProviderModelsSection } from "./ProviderModelsSection";
 import { ProviderInstanceIcon } from "../chat/ProviderInstanceIcon";
 import { ProviderAccentColorPicker } from "./ProviderAccentColorPicker";
@@ -1338,6 +1339,8 @@ export function ProviderInstanceCard({
           {runtimeFields}
         </SettingsSection>
       ) : null}
+
+      {instance.driver === "phi" ? <ExowattPhiDisplaySection /> : null}
 
       <SettingsSection
         title="Environment"

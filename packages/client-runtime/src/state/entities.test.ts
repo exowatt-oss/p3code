@@ -22,6 +22,40 @@ import { canSnooze, effectiveSnoozed } from "./threadSettled.ts";
 const environmentId = EnvironmentId.make("environment-v2");
 
 describe("V2 client presentation", () => {
+  // exowatt: v1-imported threads keep their provider thread but have no runs.
+  it("presents no runtime for an imported thread without runs", () => {
+    const shell = presentThreadShell(environmentId, {
+      ...v2ThreadShell,
+      latestRunId: null,
+      activeProviderThreadId: ProviderThreadId.make("provider-thread-imported"),
+      status: "idle",
+    });
+    expect(shell.runtime).toBeNull();
+  });
+
+  it("derives a passive hand-back from a settled shell, clearing it during the next run", () => {
+    const handback = { endState: "awaiting-human" as const, question: "Ship it?" };
+    const settled = presentThreadShell(environmentId, {
+      ...v2ThreadShell,
+      latestWorkspaceState: handback,
+      status: "completed",
+    });
+    expect(settled.hasAwaitingHumanHandback).toBe(true);
+    expect(settled.hasPendingUserInput).toBe(false);
+    const running = presentThreadShell(environmentId, {
+      ...v2ThreadShell,
+      latestWorkspaceState: handback,
+      status: "running",
+    });
+    expect(running.hasAwaitingHumanHandback).toBe(false);
+    expect(
+      presentThreadShell(environmentId, {
+        ...v2ThreadShell,
+        latestWorkspaceState: { endState: "complete" },
+      }).hasAwaitingHumanHandback,
+    ).toBe(false);
+  });
+
   it("an async question allows snooze and wakes an older snooze", () => {
     const runId = RunId.make("run-async-question");
     const running = {

@@ -195,7 +195,13 @@ const readSettingsObject = Effect.fn(function* (settingsPath: string) {
 /** The server's in-process semaphore cannot serialize writes from this process. */
 const CONCURRENT_WRITE_ATTEMPTS = 5;
 
-const writeDefaultTheme = Effect.fn(function* (input: {
+/**
+ * Writes (or clears) `defaultTheme` in the environment's `settings.json`.
+ * Exported because the `theme_set` MCP tool sets the environment theme the
+ * same way this command does; `defaultTheme` is deliberately absent from
+ * `ServerSettingsPatch`, so there is no settings RPC that can do it.
+ */
+export const writeDefaultTheme = Effect.fn("writeDefaultTheme")(function* (input: {
   readonly settingsPath: string;
   readonly themeId: string;
 }) {
@@ -373,9 +379,13 @@ const publishThemeFile = Effect.fn(function* (input: {
 });
 
 /** Web and desktop cannot resolve the mobile default, and mobile does not follow this setting. */
-const resolvableThemeIds = Effect.fn(function* (themesDir: string) {
+export const resolvableThemeIdsFrom = (
+  publishedThemeIds: Iterable<string>,
+): ReadonlyArray<string> => [...BUILT_IN_THEME_IDS, ...publishedThemeIds].toSorted();
+
+const resolvableThemeIds = Effect.fn("resolvableThemeIds")(function* (themesDir: string) {
   const published = yield* readPublishedThemes(themesDir);
-  return [...BUILT_IN_THEME_IDS, ...published.map((theme) => theme.id)].toSorted();
+  return resolvableThemeIdsFrom(published.map((theme) => theme.id));
 });
 
 const themeSetCommand = Command.make("set", {

@@ -147,6 +147,7 @@ function makeFakeBrowserWindow() {
     setZoomLevel: webContents.setZoomLevel,
     setWindowButtonPosition: window.setWindowButtonPosition,
     setBackgroundThrottling: webContents.setBackgroundThrottling,
+    setWindowOpenHandler: webContents.setWindowOpenHandler,
     setAutoHideCursor: window.setAutoHideCursor,
     setFullScreen: window.setFullScreen,
     setOpacity: window.setOpacity,
@@ -514,6 +515,83 @@ describe("DesktopWindow", () => {
       DesktopWindow.isSameOriginRendererNavigation({
         applicationUrl: "data:text/html,app",
         navigationUrl: "data:text/html,other",
+      }),
+    );
+  });
+
+  it("recognizes opaque same-app renderer navigations", () => {
+    assert.isTrue(
+      DesktopWindow.isSameOriginRendererNavigation({
+        applicationUrl: "t3code://app/",
+        navigationUrl: "t3code://app/settings/connections",
+      }),
+    );
+    assert.isFalse(
+      DesktopWindow.isApplicationThreadNavigationUrl({
+        applicationUrl: "t3code://app/",
+        navigationUrl: "t3code://app/env-a/thread-1",
+      }),
+    );
+    for (const navigationUrl of [
+      "t3code://app/settings/connections",
+      "t3code://app/customize/appearance",
+      "http://127.0.0.1:3773/settings/connections",
+      "http://127.0.0.1:3773/customize/appearance",
+      "http://127.0.0.1:3773/draft/draft-1",
+    ]) {
+      assert.isFalse(
+        DesktopWindow.isApplicationThreadNavigationUrl({
+          applicationUrl: "t3code://app/",
+          navigationUrl,
+        }),
+      );
+    }
+    assert.isTrue(
+      DesktopWindow.isApplicationThreadNavigationUrl({
+        applicationUrl: "t3code://app/",
+        navigationUrl: "p3://thread/thread-1",
+      }),
+    );
+    assert.isTrue(
+      DesktopWindow.isApplicationThreadNavigationUrl({
+        applicationUrl: "t3code://app/",
+        navigationUrl: "http://127.0.0.1:3773/env-a/thread-1",
+      }),
+    );
+    assert.isTrue(
+      DesktopWindow.isApplicationThreadNavigationUrl({
+        applicationUrl: "http://127.0.0.1:3773/oauth/callback",
+        navigationUrl: "http://127.0.0.1:3773/oauth/callback#/env-a/thread-1",
+      }),
+    );
+    assert.isFalse(
+      DesktopWindow.isApplicationThreadNavigationUrl({
+        applicationUrl: "t3code://app/",
+        navigationUrl: "http://127.0.0.1:3000/admin/users",
+      }),
+    );
+    assert.isFalse(
+      DesktopWindow.isApplicationThreadNavigationUrl({
+        applicationUrl: "t3code://app/",
+        navigationUrl: "https://accounts.microsoft.com/oauth",
+      }),
+    );
+    assert.isFalse(
+      DesktopWindow.isSameOriginRendererNavigation({
+        applicationUrl: "t3code://app/",
+        navigationUrl: "https://accounts.microsoft.com/oauth",
+      }),
+    );
+    assert.isFalse(
+      DesktopWindow.isSameOriginRendererNavigation({
+        applicationUrl: "t3code://app/",
+        navigationUrl: "not a url",
+      }),
+    );
+    assert.isFalse(
+      DesktopWindow.isApplicationThreadNavigationUrl({
+        applicationUrl: "t3code://app/",
+        navigationUrl: "https://accounts.microsoft.com/oauth",
       }),
     );
   });
@@ -1121,6 +1199,16 @@ describe("DesktopWindow", () => {
         const desktopWindow = yield* DesktopWindow.DesktopWindow;
         yield* desktopWindow.handleBackendReady(new URL("http://127.0.0.1:3773"));
 
+        const windowOpenHandler = fakeWindow.setWindowOpenHandler.mock.calls[0]?.[0];
+        if (!windowOpenHandler) {
+          return yield* Effect.die("window-open handler was not registered");
+        }
+        assert.deepEqual(windowOpenHandler({ url: "p3://thread/thread-1" }), { action: "deny" });
+        assert.deepEqual(windowOpenHandler({ url: "t3code-dev://app/env-a/thread-1" }), {
+          action: "deny",
+        });
+        assert.deepEqual(openedExternalUrls, []);
+
         const willNavigate = fakeWindow.webContentsListeners.get("will-navigate");
         if (!willNavigate) {
           return yield* Effect.die("will-navigate listener was not registered");
@@ -1135,6 +1223,22 @@ describe("DesktopWindow", () => {
           assert.equal(preventDefault.mock.calls.length, expectedPrevented ? 1 : 0, url);
         }
         assert.deepEqual(openedExternalUrls, []);
+
+        for (const url of [
+          "t3code-dev://app/settings/connections",
+          "t3code-dev://app/customize/appearance",
+        ]) {
+          let appRoutePrevented = false;
+          willNavigate(
+            {
+              preventDefault: () => {
+                appRoutePrevented = true;
+              },
+            },
+            url,
+          );
+          assert.isFalse(appRoutePrevented);
+        }
 
         let prevented = false;
         willNavigate(

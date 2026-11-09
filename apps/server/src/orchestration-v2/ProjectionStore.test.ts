@@ -1241,6 +1241,90 @@ const addOrphanedRecoveryCandidate = Effect.fn("addOrphanedRecoveryCandidate")(f
   return threadId;
 });
 
+it.effect("projects the latest Phi hand-back into both memory and persisted shell snapshots", () =>
+  Effect.gen(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const threadId = yield* addOrphanedRecoveryCandidate("phi-handback");
+    const now = yield* DateTime.now;
+    const providerThreadId = ProviderThreadId.make("provider-thread:phi-handback");
+    const nodeId = NodeId.make("node:phi-handback");
+    const putTurn = (ordinal: number) =>
+      store.apply({
+        id: EventId.make(`event:phi-handback:turn:${ordinal}`),
+        type: "provider-turn.updated",
+        threadId,
+        driver,
+        occurredAt: now,
+        payload: {
+          id: ProviderTurnId.make(`provider-turn:phi-handback:${ordinal}`),
+          providerThreadId,
+          nodeId,
+          runAttemptId: null,
+          nativeTurnRef: null,
+          ordinal,
+          status: "completed" as const,
+          startedAt: now,
+          completedAt: now,
+        },
+      });
+    yield* putTurn(1);
+    yield* store.apply({
+      id: EventId.make("event:phi-handback:item"),
+      type: "turn-item.updated",
+      threadId,
+      nodeId,
+      driver,
+      occurredAt: now,
+      payload: {
+        id: TurnItemId.make("item:phi-handback"),
+        threadId,
+        runId: null,
+        nodeId,
+        providerThreadId,
+        providerTurnId: ProviderTurnId.make("provider-turn:phi-handback:1"),
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 2,
+        status: "completed" as const,
+        title: "Session state",
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+        type: "workspace_state" as const,
+        payload: {
+          endState: "awaiting-human" as const,
+          question: "Ship it?",
+          openItems: [],
+          recordedAt: DateTime.formatIso(now),
+        },
+      },
+    });
+    const read = () =>
+      Effect.gen(function* () {
+        const projection = yield* store.getThreadProjection(threadId);
+        const memory = ProjectionStore.threadShellFromProjection(projection);
+        const sql = (yield* store.getShellSnapshot()).threads.find(
+          (thread) => thread.id === threadId,
+        );
+        const perThread = yield* store.getThreadShell(threadId);
+        return {
+          memory: memory.latestWorkspaceState,
+          sql: sql?.latestWorkspaceState,
+          perThread: perThread?.latestWorkspaceState,
+        };
+      });
+    const handback = yield* read();
+    assert.equal(handback.memory?.endState, "awaiting-human");
+    assert.deepEqual(handback.sql, handback.memory);
+    assert.deepEqual(handback.perThread, handback.memory);
+    yield* putTurn(2);
+    const superseded = yield* read();
+    assert.isNull(superseded.memory);
+    assert.isNull(superseded.sql);
+    assert.isNull(superseded.perThread);
+  }).pipe(Effect.provide(layerTest)),
+);
+
 const restartCancelledWorkSurvivesStaleRunUpdate = Effect.gen(function* () {
   const store = yield* ProjectionStore.ProjectionStoreV2;
   const threadId = yield* addRolledBackRecoveryCandidate("restart-cancelled-work-stale-update");
@@ -6574,9 +6658,17 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         );
         assert.isAbove(sessionLookup, bindingLookup, marker);
         assert.include(plan[sessionLookup], "(provider_session_id=?)");
+        // exowatt: the shell also reads the latest provider turn's workspace-state
+        // item, by provider_turn_id; it is not an error lookup.
+        const workspaceStateLookups = plan.filter((detail) =>
+          detail.includes("turn_items_provider_turn_idx"),
+        );
+        assert.lengthOf(workspaceStateLookups, marker.includes("blocking") ? 1 : 0, marker);
         const errorLookups = plan.filter(
           (detail) =>
-            /^SEARCH (?:item|error) /.test(detail) && !detail.includes("(turn_item_id=?)"),
+            /^SEARCH (?:item|error) /.test(detail) &&
+            !detail.includes("(turn_item_id=?)") &&
+            !detail.includes("turn_items_provider_turn_idx"),
         );
         assert.lengthOf(errorLookups, marker.includes("blocking") ? 2 : 1, marker);
         for (const errorLookup of errorLookups) {

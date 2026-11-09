@@ -60,6 +60,7 @@ import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEve
 import * as ProviderInstanceRegistryHydration from "./ProviderInstanceRegistryHydration.ts";
 import * as PortScanner from "../preview/PortScanner.ts";
 import * as ServerConfig from "../config.ts";
+import * as HarnessLaunchEnvironment from "./HarnessLaunchEnvironment.ts";
 import * as ServerSettingsModule from "../serverSettings.ts";
 import {
   readProviderStatusCache,
@@ -338,6 +339,7 @@ const layerTestNodeServices = Layer.mergeAll(
   Layer.mock(CodexManagedTokenBroker.CodexManagedTokenBroker)({
     endpoint: Effect.succeed("unused-private-pipe"),
   }),
+  HarnessLaunchEnvironment.layerTest({}),
   Layer.mock(CodexInstallation.CodexInstallation)({
     managedDirectory: "unused-managed-installation",
   }),
@@ -2709,7 +2711,8 @@ it.layer(
           decodeServerSettings(
             deepMerge(encodedDefaultServerSettings, {
               providerInstances: {
-                ...disabledDefaultSlots("claudeAgent", "cursor", "grok", "opencode"),
+                // exowatt: phi is a built-in driver and would otherwise be probed too.
+                ...disabledDefaultSlots("claudeAgent", "cursor", "grok", "opencode", "phi"),
                 [ProviderInstanceId.make("codex")]: {
                   driver: ProviderDriverKind.make("codex"),
                   enabled: true,
@@ -2804,7 +2807,8 @@ it.layer(
           );
           yield* serverSettings.updateSettings({
             providerInstances: {
-              ...disabledDefaultSlots("claudeAgent", "cursor", "grok", "opencode"),
+              // exowatt: phi is a built-in driver and would otherwise be probed too.
+              ...disabledDefaultSlots("claudeAgent", "cursor", "grok", "opencode", "phi"),
               [ProviderInstanceId.make("codex")]: {
                 driver: ProviderDriverKind.make("codex"),
                 enabled: true,
@@ -2834,7 +2838,15 @@ it.layer(
           decodeServerSettings(
             deepMerge(encodedDefaultServerSettings, {
               providerInstances: {
-                ...disabledDefaultSlots("codex", "claudeAgent", "cursor", "grok", "opencode"),
+                // exowatt: phi is a built-in driver and would otherwise be probed too.
+                ...disabledDefaultSlots(
+                  "codex",
+                  "claudeAgent",
+                  "cursor",
+                  "grok",
+                  "opencode",
+                  "phi",
+                ),
                 ghost_main: {
                   driver: "ghostDriver",
                   displayName: "A fork-only driver we don't ship",
@@ -2909,6 +2921,7 @@ it.layer(
             "antigravity",
             "pi",
             "muse",
+            "phi", // exowatt
           ),
           ...(instanceId ? { [instanceId]: { driver: "ghostDriver" } } : {}),
         },

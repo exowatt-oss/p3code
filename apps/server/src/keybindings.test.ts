@@ -145,6 +145,36 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
     }).pipe(Effect.provide(layerKeybindings())),
   );
 
+  it.effect("ships configurable thread navigation defaults", () =>
+    Effect.sync(() => {
+      const defaultsByCommand = new Map(
+        SharedKeybindings.DEFAULT_KEYBINDINGS.map(
+          (binding) => [binding.command, binding.key] as const,
+        ),
+      );
+
+      assert.equal(defaultsByCommand.get("thread.previous"), "mod+shift+[");
+      assert.equal(defaultsByCommand.get("thread.next"), "mod+shift+]");
+      assert.equal(defaultsByCommand.get("thread.copyReference"), "mod+shift+c");
+      assert.equal(defaultsByCommand.get("thread.settle"), "mod+shift+s");
+      assert.equal(defaultsByCommand.get("thread.pin"), "mod+shift+p");
+      assert.equal(defaultsByCommand.get("settings.open"), "mod+,");
+      assert.equal(defaultsByCommand.get("commandPalette.toggle"), "mod+k");
+      assert.equal(defaultsByCommand.get("thread.jump.1"), "mod+1");
+      assert.equal(defaultsByCommand.get("thread.jump.9"), "mod+9");
+      assert.equal(defaultsByCommand.get("modelPicker.toggle"), "mod+shift+m");
+      assert.equal(defaultsByCommand.get("themeEditor.toggle"), "mod+alt+shift+t");
+      assert.equal(defaultsByCommand.get("filePicker.toggle"), "mod+p");
+      assert.equal(defaultsByCommand.get("projectSearch.toggle"), "mod+shift+f");
+      assert.equal(defaultsByCommand.get("sidebar.toggle"), "mod+b");
+      assert.equal(defaultsByCommand.get("rightPanel.toggle"), "mod+alt+b");
+      assert.isFalse(defaultsByCommand.has("rightPanel.toggleMaximized"));
+      assert.equal(defaultsByCommand.get("terminal.splitVertical"), "mod+shift+d");
+      assert.equal(defaultsByCommand.get("modelPicker.jump.1"), "mod+1");
+      assert.equal(defaultsByCommand.get("modelPicker.jump.9"), "mod+9");
+    }),
+  );
+
   it.effect("uses defaults in runtime when config is malformed without overriding file", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -167,6 +197,27 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
         },
       ]);
       assert.equal(yield* fs.readFileString(keybindingsConfigPath), "{ not-json");
+    }).pipe(Effect.provide(layerKeybindings())),
+  );
+
+  it.effect("reads P3's retired composer.voiceInput entry as composer.dictation", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const { keybindingsConfigPath } = yield* ServerConfig.ServerConfig;
+      yield* fs.writeFileString(
+        keybindingsConfigPath,
+        JSON.stringify([{ key: "mod+shift+space", command: "composer.voiceInput" }]),
+      );
+
+      const configState = yield* Effect.gen(function* () {
+        const keybindings = yield* Keybindings.Keybindings;
+        return yield* keybindings.loadConfigState;
+      });
+
+      assert.deepEqual(configState.issues, []);
+      assert.isTrue(
+        configState.keybindings.some((entry) => entry.command === "composer.dictation"),
+      );
     }).pipe(Effect.provide(layerKeybindings())),
   );
 
@@ -317,6 +368,28 @@ it.layer(NodeServices.layer)("keybindings", (it) => {
       yield* writeKeybindingsConfig(keybindingsConfigPath, [existing]);
       yield* keybindings.syncDefaultKeybindingsOnStartup;
       assert.isTrue(yield* hasModEnter);
+    }).pipe(Effect.provide(layerKeybindings())),
+  );
+
+  it.effect("leaves an untouched upstream keybindings file's thread.pin alone", () =>
+    Effect.gen(function* () {
+      const { keybindingsConfigPath } = yield* ServerConfig.ServerConfig;
+      yield* writeKeybindingsConfig(keybindingsConfigPath, [
+        { key: "mod+shift+p", command: "thread.pin", when: "!terminalFocus" },
+      ]);
+
+      yield* Effect.gen(function* () {
+        const keybindings = yield* Keybindings.Keybindings;
+        yield* keybindings.syncDefaultKeybindingsOnStartup;
+      });
+
+      const persisted = yield* readKeybindingsConfig(keybindingsConfigPath);
+      assert.isTrue(
+        persisted.some((entry) => entry.command === "thread.pin" && entry.key === "mod+shift+p"),
+      );
+      assert.isTrue(
+        persisted.some((entry) => entry.command === "settings.open" && entry.key === "mod+,"),
+      );
     }).pipe(Effect.provide(layerKeybindings())),
   );
 

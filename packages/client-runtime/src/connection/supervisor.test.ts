@@ -538,7 +538,7 @@ describe("EnvironmentSupervisor", () => {
 
       expect(yield* Ref.get(harness.prepareCount)).toBe(1);
 
-      yield* TestClock.adjust("15 seconds");
+      yield* TestClock.adjust("30 seconds");
       const retrying = yield* awaitState(
         supervisor.state,
         (state) => state.phase === "backoff" && state.attempt === 1,
@@ -1051,7 +1051,8 @@ describe("EnvironmentSupervisor", () => {
 
       yield* awaitState(supervisor.state, (state) => state.phase === "connected");
       yield* harness.wake("application-active-probe");
-      yield* TestClock.adjust("2999 millis");
+      // exowatt: the quick probe budget is 8 seconds (high-latency links).
+      yield* TestClock.adjust("7999 millis");
       expect(yield* Ref.get(harness.sessionCount)).toBe(1);
 
       yield* TestClock.adjust("1 millis");
@@ -1907,7 +1908,7 @@ describe("EnvironmentSupervisor routes", () => {
 
       yield* Ref.set(lanReachable, false);
       yield* harness.wake("network-changed");
-      yield* TestClock.adjust("3 seconds");
+      yield* TestClock.adjust("8 seconds");
 
       yield* awaitState(
         supervisor.state,
@@ -2025,7 +2026,8 @@ describe("EnvironmentSupervisor routes", () => {
         yield* Deferred.succeed(finishDiscovery, undefined);
         if (discovery === "withdrawn-upgrade") {
           yield* Deferred.await(discoveryProcessed);
-          yield* TestClock.adjust("60 seconds");
+          // exowatt: each route's establishment budget is 30 seconds (high-latency links).
+          yield* TestClock.adjust("120 seconds");
           expect((yield* SubscriptionRef.get(supervisor.state)).generation).toBe(2);
           return;
         }

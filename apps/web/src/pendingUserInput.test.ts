@@ -5,6 +5,7 @@ import { threadContextReference } from "./lib/composerContextRecords";
 import { threadContextRecord } from "@t3tools/shared/composerContextReferences";
 
 import {
+  canInsertWithPendingUserInputs,
   carryDisplacedCustomAnswerIntoPrompt,
   derivePendingUserInputProgress,
   projectPendingUserInputAnswer,
@@ -23,7 +24,7 @@ describe("projectPendingUserInputAnswer", () => {
   it("sends thread chips as readable links with the actual thread ID", () => {
     const answer = `Compare ${formatInlineContextReference(threadContextReference(record))}`;
     expect(projectPendingUserInputAnswer(answer, [record])).toBe(
-      "Compare [Reference work](t3-thread://v2/env-answer/reference-thread)",
+      "Compare [Reference work](p3://thread/reference-thread)",
     );
   });
 
@@ -63,6 +64,14 @@ const singleSelectQuestion = {
   ],
   multiSelect: false,
 } as const;
+
+describe("composer context inserts while awaiting input", () => {
+  it("allows no request or only message-mode requests, but not a live form", () => {
+    expect(canInsertWithPendingUserInputs([])).toBe(true);
+    expect(canInsertWithPendingUserInputs([{ responseMode: "message" }])).toBe(true);
+    expect(canInsertWithPendingUserInputs([{ responseMode: "message" }, {}])).toBe(false);
+  });
+});
 
 describe("pending user input question progress", () => {
   const questions = [

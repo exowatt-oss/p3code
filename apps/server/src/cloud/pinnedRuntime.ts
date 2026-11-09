@@ -25,6 +25,10 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 
 import * as ProcessRunner from "../processRunner.ts";
 import { isExactServiceVersion, parseServiceState, SERVICE_STATE_FILE } from "./serviceProtocol.ts";
+import {
+  currentExowattP3ServerDetection,
+  exowattP3ServerRefusalReason,
+} from "./exowattP3Server.ts";
 
 const PINNED_RUNTIME_DIR = "runtime";
 const PINNED_RUNTIME_INSTALL_TIMEOUT = Duration.minutes(10);
@@ -272,6 +276,15 @@ const installPinnedRuntime = Effect.fn("cloud.pinned_runtime.ensure_installed")(
   input: PinnedRuntimeInstallInput,
 ) {
   const { fs } = input;
+  // Exowatt: a P3 server never installs (or switches to) a stock `t3` runtime.
+  const p3 = currentExowattP3ServerDetection();
+  if (p3.p3Server) {
+    const reason = exowattP3ServerRefusalReason(input.version, p3);
+    yield* Effect.logWarning(`Refusing pinned runtime install: ${reason}`);
+    return yield* new PinnedRuntimeInstallError({
+      step: `refusing to install stock t3@${input.version} over the P3 Code server (${reason})`,
+    });
+  }
   const paths = pinnedRuntimePaths(input.path, input.baseDir, input.version, input.platform);
   const [versionDirExists, entryExists, sentinel] = yield* Effect.all([
     fs.exists(paths.versionDir),

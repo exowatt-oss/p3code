@@ -238,6 +238,21 @@ export function derivePendingThreadRequests(
           candidate.type === "user_input_request" && candidate.requestId === request.id,
       );
       if (item === undefined || item.type !== "user_input_request") continue;
+      // Phi's workspace-state hand-back is a passive question, not a form to
+      // answer. Keep its request in the projection for needs-you/history, but
+      // let the ordinary composer own the next turn (including citations and images).
+      // Sending a normal message supersedes the request, including after a reconnect.
+      if (
+        request.nativeRequestRef?.driver === "phi" &&
+        request.nativeRequestRef.nativeId?.startsWith("workspace-state:") &&
+        responseCapability === "message" &&
+        item.responseMode === "message" &&
+        item.questions.length === 1 &&
+        item.questions[0]?.allowCustomAnswer === true &&
+        item.questions[0].options.length === 0
+      ) {
+        continue;
+      }
       userInputs.push({
         requestId: request.id,
         createdAt: DateTime.formatIso(request.createdAt),

@@ -623,6 +623,14 @@ type MessagesTimelineRowContent =
       resourceSummary?: boolean;
     }
   | {
+      kind: "workspace-state";
+      id: string;
+      createdAt: string;
+      workspaceState: Extract<TimelineEntry, { kind: "workspace-state" }>["workspaceState"];
+      /** False when the question repeats the reply right above it. */
+      showQuestion: boolean;
+    }
+  | {
       kind: "proposed-plan";
       id: string;
       createdAt: string;
@@ -1124,7 +1132,7 @@ function deriveTurnFolds(input: {
       ? group.entries.findIndex((entry) => entry.id === group.terminalEntry?.id)
       : group.entries.length;
     for (const [index, entry] of group.entries.entries()) {
-      if (entry.id === group.terminalEntry?.id) {
+      if (entry.id === group.terminalEntry?.id || entry.kind === "workspace-state") {
         continue;
       }
       const isCompaction = timelineEntryIsCompaction(entry);
@@ -1499,6 +1507,16 @@ function deriveTimelineTurnFolds(
   });
 }
 
+// exowatt: loose markdown-free text, so a hand-back question copied from the reply matches it.
+function plainText(markdown: string): string {
+  return markdown
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/[*_`~#>]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
 export function deriveMessagesTimelineRows(input: {
   timelineEntries: ReadonlyArray<TimelineEntry>;
   pendingApprovalRequestIds?: ReadonlySet<RuntimeRequestId>;
@@ -1515,6 +1533,10 @@ export function deriveMessagesTimelineRows(input: {
   supportsConversationRollback: boolean;
   threadStartCheckpointReady?: boolean;
   availableRevertTurnCounts?: ReadonlySet<number> | undefined;
+  /** Client-local display preference; turn items remain available when turned back on. */
+  showWorkspaceStateCallouts?: boolean;
+  /** Client-local display preference for Phi's MCP connection notices. */
+  showPhiMcpNotices?: boolean;
   worktreeSetup?: WorktreeSetupSnapshot | null;
   toolCallVisibility?: ToolCallVisibility;
   revealedMessageId?: MessageId | null;
@@ -1916,7 +1938,35 @@ export function deriveMessagesTimelineRows(input: {
       continue;
     }
 
+    if (timelineEntry.kind === "workspace-state") {
+      if (input.showWorkspaceStateCallouts === false) continue;
+      const { workspaceState } = timelineEntry;
+      if (workspaceState.openItems.length === 0 && !workspaceState.feadsEpic) continue;
+      const reply = timelineEntries.slice(0, index).findLast((entry) => entry.kind === "message");
+      nextRows.push({
+        kind: "workspace-state",
+        id: timelineEntry.id,
+        createdAt: timelineEntry.createdAt,
+        workspaceState,
+        showQuestion:
+          workspaceState.question !== null &&
+          !(
+            reply?.kind === "message" &&
+            reply.message.role === "assistant" &&
+            plainText(reply.message.text).includes(plainText(workspaceState.question))
+          ),
+      });
+      continue;
+    }
+
     if (timelineEntry.kind === "work") {
+      if (
+        input.showPhiMcpNotices === false &&
+        timelineEntry.entry.itemType === "system_notice" &&
+        /\bmcp\b/i.test(timelineEntry.entry.label)
+      ) {
+        continue;
+      }
       if (
         isPendingApproval(timelineEntry.entry) ||
         (timelineEntry.entry.runId != null && itemizedRunIds.has(timelineEntry.entry.runId)) ||
@@ -2582,6 +2632,11 @@ function isRowUnchanged(a: MessagesTimelineRow, b: MessagesTimelineRow): boolean
         mcpAppReferencesEqual(a.mcpApp, bm.mcpApp)
       );
     }
+    case "workspace-state":
+      return (
+        a.workspaceState === (b as typeof a).workspaceState &&
+        a.showQuestion === (b as typeof a).showQuestion
+      );
 
     case "event":
       return (

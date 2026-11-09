@@ -81,5 +81,6 @@ export function formatContextWindowCost(cost: {
   readonly currency: string;
 }): string {
   const fractionDigits = Math.abs(cost.amount) > 0 && Math.abs(cost.amount) < 0.01 ? 4 : 2;
-  return `${cost.currency} ${cost.amount.toFixed(fractionDigits)}`;
+  const amount = cost.amount.toFixed(fractionDigits);
+  return cost.currency === "USD" ? `$${amount}` : `${cost.currency} ${amount}`;
 }

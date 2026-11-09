@@ -17,6 +17,7 @@ import {
   deriveTimelineEntriesFromVisibleTurnItemsWithState,
   workEntryDisplayIndicatesToolFailure,
   type TimelineEntry,
+  type WorkspaceState,
 } from "../../session-logic";
 import { makeStreamingTimelineFixture } from "../../test-fixtures";
 import type { TurnDiffSummary } from "../../types";
@@ -4555,5 +4556,127 @@ describe("shouldCollapseUserMessage", () => {
 
     expect(shouldCollapseUserMessage(`${citation} Can you expand on this?`)).toBe(false);
     expect(shouldCollapseUserMessage(`${citation} ${"More text. ".repeat(60)}`)).toBe(true);
+  });
+});
+
+// exowatt: Phi workspace-state hand-back card (docs/internals/exowatt-delta.md).
+describe("workspace-state rows", () => {
+  const runId = RunId.make("turn-ws");
+  const rows = (
+    workspaceState: Partial<WorkspaceState>,
+    options: { readonly showWorkspaceStateCallouts?: boolean } = {},
+    replyText = "Done for now.",
+  ) =>
+    deriveMessagesTimelineRows({
+      timelineEntries: [
+        {
+          id: "work-entry",
+          kind: "work",
+          createdAt: "2026-01-01T00:00:01Z",
+          entry: {
+            id: "work",
+            createdAt: "2026-01-01T00:00:01Z",
+            runId,
+            label: "Ran command",
+            tone: "tool",
+          },
+        },
+        {
+          id: "assistant-entry",
+          kind: "message",
+          createdAt: "2026-01-01T00:00:05Z",
+          message: {
+            id: MessageId.make("assistant-ws"),
+            role: "assistant",
+            text: replyText,
+            runId,
+            createdAt: "2026-01-01T00:00:05Z",
+            updatedAt: "2026-01-01T00:00:06Z",
+            streaming: false,
+          },
+        },
+        {
+          id: "workspace-state-entry",
+          kind: "workspace-state",
+          createdAt: "2026-01-01T00:00:07Z",
+          workspaceState: {
+            id: "workspace-state-item",
+            providerTurnId: null,
+            createdAt: "2026-01-01T00:00:07Z",
+            endState: "awaiting-human",
+            question: "Merge the PR?",
+            openItems: [],
+            feadsEpic: null,
+            recordedAt: "2026-01-01T00:00:07Z",
+            ...workspaceState,
+          },
+        },
+      ],
+      latestRun: {
+        runId,
+        status: "completed",
+        startedAt: "2026-01-01T00:00:00Z",
+        completedAt: "2026-01-01T00:00:08Z",
+      },
+      isWorking: false,
+      activeTurnStartedAt: null,
+      turnDiffSummaries: [],
+      supportsConversationRollback: false,
+      ...options,
+    });
+  const rowIds = (...args: Parameters<typeof rows>) => rows(...args).map((row) => row.id);
+  const showsQuestion = (replyText: string) => {
+    const row = rows({ feadsEpic: "p3-123" }, {}, replyText).find(
+      (candidate) => candidate.kind === "workspace-state",
+    );
+    return row?.kind === "workspace-state" ? row.showQuestion : undefined;
+  };
+
+  it("shows the card after the folded turn when it has open items or an epic", () => {
+    const expected = ["turn-fold:turn-ws", "assistant-entry", "workspace-state-entry"];
+    expect(rowIds({ openItems: ["Review the PR"] })).toEqual(expected);
+    expect(rowIds({ feadsEpic: "p3-123" })).toEqual(expected);
+  });
+
+  it("hides the card without open items or an epic, or when callouts are off", () => {
+    expect(rowIds({})).not.toContain("workspace-state-entry");
+    expect(
+      rowIds({ openItems: ["Review the PR"] }, { showWorkspaceStateCallouts: false }),
+    ).not.toContain("workspace-state-entry");
+  });
+
+  it("hides Phi MCP notices when turned off, keeping other notices", () => {
+    const notice = (id: string, label: string) => ({
+      id,
+      kind: "work" as const,
+      createdAt: "2026-01-01T00:00:01Z",
+      entry: {
+        id,
+        createdAt: "2026-01-01T00:00:01Z",
+        label,
+        tone: "info" as const,
+        itemType: "system_notice" as const,
+      },
+    });
+    const ids = (showPhiMcpNotices?: boolean) =>
+      deriveMessagesTimelineRows({
+        timelineEntries: [
+          notice("mcp", "\u2713 MCP connected \u2014 1 server, 62 tools ready"),
+          notice("fallback", "Phi rerouted to anthropic/x"),
+        ],
+        isWorking: false,
+        activeTurnStartedAt: null,
+        turnDiffSummaries: [],
+        supportsConversationRollback: false,
+        ...(showPhiMcpNotices === undefined ? {} : { showPhiMcpNotices }),
+      }).map((row) => row.id);
+    expect(ids()).toEqual(["mcp", "fallback"]);
+    expect(ids(false)).toEqual(["fallback"]);
+  });
+
+  it("drops a question the reply above already asks, ignoring markdown", () => {
+    expect(showsQuestion("Done for now.")).toBe(true);
+    expect(showsQuestion("👉 **Merge   the PR?**\n\nDetails follow.")).toBe(false);
+    expect(showsQuestion("Shipped it. Merge the [PR](https://example.com/pr/1)?")).toBe(false);
   });
 });

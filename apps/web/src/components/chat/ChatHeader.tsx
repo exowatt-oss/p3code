@@ -27,6 +27,8 @@ import { useThreadActionMenu } from "~/hooks/useThreadActionMenu";
 import { readLocalApi } from "~/localApi";
 import { threadEnvironment } from "../../state/threads";
 import { canShareWithGuestAtom } from "./guestShareAvailability";
+import ChatMarkdown from "../ChatMarkdown";
+import { WorkspaceEndStateLabel } from "./TimelineWorkspaceStateRow";
 import { useAtomValue } from "@effect/atom-react";
 import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import { readEnvironmentScope, useEnvironmentScope } from "../../state/session";
@@ -44,6 +46,7 @@ import { useClientSettings } from "../../hooks/useSettings";
 import { GuestShareIndicator } from "./GuestShareControls";
 
 interface ChatHeaderProps {
+  latestWorkspaceState: import("../../session-logic").WorkspaceState | null;
   activeThreadEnvironmentId: EnvironmentId;
   activeThreadId: ThreadId;
   activeThreadTitle: string;
@@ -71,6 +74,7 @@ function resolveRenameCommit(input: {
 // Delay the input-swallowing native menu through the double-click rename interval.
 const TITLE_MENU_OPEN_DELAY_MS = 500;
 export const ChatHeader = memo(function ChatHeader({
+  latestWorkspaceState,
   activeThreadEnvironmentId,
   activeThreadId,
   activeThreadTitle,
@@ -84,6 +88,9 @@ export const ChatHeader = memo(function ChatHeader({
   onOpenProjectSettings,
   onFindInThread,
 }: ChatHeaderProps) {
+  const showWorkspaceStateCallouts = useClientSettings(
+    (settings) => settings["exowatt.workspaceStateCallouts"],
+  );
   const activeProjectName = activeProject?.isScratch ? "No project" : activeProject?.title;
   const activeProjectCwd = activeProject?.workspaceRoot ?? null;
   const interfaceFont = useClientSettings((settings) => settings.fontFamilySans);
@@ -431,6 +438,23 @@ export const ChatHeader = memo(function ChatHeader({
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
       {isServerThread ? <GuestShareIndicator threadRef={activeThreadRef} /> : null}
+      {showWorkspaceStateCallouts && latestWorkspaceState ? (
+        <span className="hidden min-w-0 items-center gap-2 text-xs text-secondary-label @2xl/header-actions:inline-flex">
+          <WorkspaceEndStateLabel endState={latestWorkspaceState.endState} />
+          <span className="max-w-56 truncate">
+            <ChatMarkdown
+              inline
+              text={
+                latestWorkspaceState.question ??
+                latestWorkspaceState.openItems[0] ??
+                "Session state"
+              }
+              cwd={undefined}
+              parseRawHtml={false}
+            />
+          </span>
+        </span>
+      ) : null}
     </div>
   );
 });

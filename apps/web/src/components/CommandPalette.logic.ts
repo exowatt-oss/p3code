@@ -73,6 +73,8 @@ export type SearchOverlayMode = "command" | "files" | "content";
 
 export type CommandPaletteOpenIntent =
   | { readonly kind: "add-project" | "new-thread-in" | "change-theme" }
+  // exowatt: opens the P3 Code menu (the sidebar footer's utilities) directly.
+  | { readonly kind: "exowatt-menu" }
   | {
       readonly kind: "search";
       readonly query: string;
@@ -101,6 +103,7 @@ export type CommandPaletteUiAction =
   | { readonly _tag: "OpenAddProject" }
   | { readonly _tag: "OpenNewThreadIn" }
   | { readonly _tag: "OpenChangeTheme" }
+  | { readonly _tag: "OpenExowattMenu" }
   | {
       readonly _tag: "OpenChildSearch";
       readonly mode: "files" | "content";
@@ -158,6 +161,8 @@ export function reduceCommandPaletteUiState(
       return openWithIntent({ kind: "new-thread-in" });
     case "OpenChangeTheme":
       return openWithIntent({ kind: "change-theme" });
+    case "OpenExowattMenu":
+      return openWithIntent({ kind: "exowatt-menu" });
   }
 }
 

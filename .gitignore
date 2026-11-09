@@ -48,3 +48,6 @@ node_modules/
 
 # pnpm content-addressable store; never belongs in the repo.
 .pnpm-store/
+
+# Exowatt: packed dev server tarballs for "Push dev server to this host"
+apps/desktop/dev-resources/

@@ -27,6 +27,11 @@ import { FetchHttpClient, HttpRouter, HttpServer } from "effect/http";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 
 import * as BackgroundPolicy from "./background/BackgroundPolicy.ts";
+// exowatt: feads integration.
+import * as FeadsBridge from "./feads/FeadsBridge.ts";
+import * as FeadsHttp from "./feads/FeadsHttp.ts";
+import * as FeadsPresencePublisher from "./feads/FeadsPresencePublisher.ts";
+import * as FeadsService from "./feads/FeadsService.ts";
 import * as HostPowerMonitor from "./background/HostPowerMonitor.ts";
 import * as ServerConfig from "./config.ts";
 import { withUntracedRequests } from "./http.ts";
@@ -35,6 +40,18 @@ import {
   guardHttpResponseWriteErrors,
   rejectRequestsUntilServing,
 } from "./httpResponseErrorGuard.ts";
+// exowatt: harness MCP connector auto-connect.
+import * as ExowattConnectorAutoConnect from "./exowattConnectorAutoConnect.ts";
+// exowatt: the thread Hub overlay store, shared by the WebSocket and MCP.
+import * as ExowattThreadHubStore from "./exowattThreadHub/ExowattThreadHubStore.ts";
+import * as ExowattThreadSignalStore from "./exowattThreadSignals/ExowattThreadSignalStore.ts";
+import * as PeerEnvironments from "./exowattPeerEnvironments/PeerEnvironments.ts";
+import * as PeerEnvironmentsHttp from "./exowattPeerEnvironments/http.ts";
+import * as PeerInbound from "./exowattPeerEnvironments/PeerInbound.ts";
+// exowatt: a Font Awesome icon per thread, picked when its title lands.
+import * as ExowattThreadIconReactor from "./exowattThreadIcons/ExowattThreadIconReactor.ts";
+import * as ExowattThreadIconStore from "./exowattThreadIcons/ExowattThreadIconStore.ts";
+import * as ProviderMaintenanceRunner from "./provider/providerMaintenanceRunner.ts";
 import { fixPath } from "./os-jank.ts";
 import * as Ws from "./ws.ts";
 import * as AgentScopeLive from "./process/agentScope.ts";
@@ -300,6 +317,18 @@ const layerUsage = UsageService.layer.pipe(
     ).pipe(Layer.provide(ProviderHostLive.layer.pipe(Layer.provide(ServerSecretStore.layer)))),
   ),
   Layer.provide(layerServerSettings),
+);
+
+// Exowatt: feads integration config (token in the secret store) + status stream.
+const layerFeadsService = FeadsService.layer().pipe(
+  Layer.provide(FeadsHttp.layerFetch),
+  Layer.provide(ServerSecretStore.layer),
+);
+// The poller shares the config service instance above (same Layer reference, so
+// the memo map hands both consumers one FeadsService).
+const layerFeads = Layer.mergeAll(
+  layerFeadsService,
+  FeadsBridge.layer().pipe(Layer.provide(FeadsHttp.layerFetch), Layer.provide(layerFeadsService)),
 );
 
 const layerResourceDiagnostics = Layer.mergeAll(
@@ -667,6 +696,23 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   ProviderInstallation.layer,
   ReplayMarkers.layer,
   Layer.effectDiscard(ProjectSettingsOverrideSweep.sweep),
+  // exowatt: writes the P3 MCP connector into installed harness configs.
+  ExowattConnectorAutoConnect.layer,
+  // exowatt: thread icons. The store is merged out so the WebSocket feed
+  // reads the same instance the reactor writes to.
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      const reactor = yield* ExowattThreadIconReactor.ExowattThreadIconReactor;
+      yield* reactor.start();
+    }),
+  ).pipe(
+    Layer.provide(ExowattThreadIconReactor.layer),
+    Layer.provideMerge(ExowattThreadIconStore.layer),
+    Layer.provide(ProjectionStoreV2.layer),
+  ),
+  // exowatt: feads Agentwatch presence for non-Phi threads (Phi publishes its
+  // own). FeadsService comes from `layerFeads` below, so it is the same instance.
+  FeadsPresencePublisher.layer().pipe(Layer.provide(FeadsHttp.layerFetch)),
 ).pipe(
   Layer.provideMerge(layerOrchestrationApplication),
   Layer.provideMerge(RuntimeLayer.layerEventInfrastructure),
@@ -741,6 +787,7 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
 const layerRuntimeDependencies = layerRuntimeCoreDependencies.pipe(
   Layer.provideMerge(layerUsage),
   Layer.provideMerge(layerBackground),
+  Layer.provideMerge(layerFeads), // exowatt
   Layer.provideMerge(layerResourceDiagnostics),
   Layer.provideMerge(TraceDiagnostics.layer),
   Layer.provideMerge(TriageService.layer.pipe(Layer.provide(GitVcsDriver.layer))),
@@ -773,6 +820,7 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(speechHttpApiLayer),
       Layer.provide(ServerHttp.layerServerEnvironmentHttpApi),
       Layer.provide(WebhookRoute.layer.pipe(Layer.provide(RelayDeliveryProof.layer))),
+      Layer.provide(PeerEnvironmentsHttp.layer), // exowatt
       Layer.provide(AuthHttp.layerAuthenticatedAuth),
     ),
     ServerHttp.layerOtlpTracesProxyRoute,
@@ -784,10 +832,13 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerHttp.layerStaticAndDevRoute,
     Ws.layer,
     speechStreamRouteLayer,
+    PeerInbound.layer, // exowatt
   ),
   McpHttpServer.layer.pipe(
     Layer.provide(ProviderAdapterRegistry.layerFromProviderInstanceRegistry),
     Layer.provide(McpOAuth.layerMcpClientAuthenticator),
+    // exowatt: the P3 settings toolkit's provider_update runs maintenance actions.
+    Layer.provide(ProviderMaintenanceRunner.layer),
   ),
   // Follows delegated tasks running in linked environments, including after a restart.
   Layer.effectDiscard(
@@ -825,6 +876,12 @@ const layerMakeRoutes = Layer.mergeAll(
   ),
   Layer.provide(CloudSpeech.layer.pipe(Layer.provide(SecretResolver.layer))),
   Layer.provide(layerServerSettings),
+  // exowatt: one store instance, so an MCP pin reaches WebSocket subscribers.
+  Layer.provide(ExowattThreadHubStore.layer),
+  // exowatt: thread signals the MCP tools read and write.
+  Layer.provide(ExowattThreadSignalStore.layer),
+  // exowatt: one link store, so a desktop PUT reaches the Threads MCP forwarder.
+  Layer.provide(PeerEnvironments.layerFetch),
   Layer.provide(PreviewAutomationBroker.layer),
   Layer.provide(ServerSelfUpdate.layer.pipe(Layer.provide(layerDesktopAppUpdate))),
   Layer.provide(layerCommandReadiness),
@@ -872,13 +929,21 @@ const layerMakeServer = Layer.unwrap(
           serviceManaged: launcher.managed,
           managedPolicy: yield* ManagedPolicy.loadedPolicy(yield* ManagedPolicy.ManagedPolicy),
         });
-        yield* ownership
-          .publish(state)
-          .pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("Failed to persist server runtime state", { cause }),
+        const persisted = yield* ownership.publish(state).pipe(
+          Effect.as(true),
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Failed to persist server runtime state", { cause }).pipe(
+              Effect.as(false),
             ),
-          );
+          ),
+        );
+        // Exowatt: the auto-connect reconciler writes this origin into the
+        // machine's harness configs, so it cannot run until the origin is on
+        // disk for it to read.
+        if (persisted) {
+          const autoConnect = yield* ExowattConnectorAutoConnect.ExowattConnectorAutoConnect;
+          yield* autoConnect.start();
+        }
       }),
     );
     const layerTailscaleServe = config.tailscaleServeEnabled

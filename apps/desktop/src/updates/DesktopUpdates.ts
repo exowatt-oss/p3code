@@ -1,7 +1,6 @@
 import {
   DESKTOP_UPDATE_RESTART_MARKER_FILE,
   DesktopUpdateChannelSchema,
-  type DesktopRuntimeInfo,
   type DesktopUpdateActionResult,
   type DesktopUpdateChannel,
   type DesktopUpdateCheckResult,
@@ -31,11 +30,11 @@ import * as DesktopConfig from "../app/DesktopConfig.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
 import * as DesktopObservability from "../app/DesktopObservability.ts";
 import * as DesktopState from "../app/DesktopState.ts";
-import * as ElectronUpdater from "../electron/ElectronUpdater.ts";
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import * as IpcChannels from "../ipc/channels.ts";
 import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopUpdatePolicy from "./DesktopUpdatePolicy.ts";
+import * as DesktopUpdateTransport from "./DesktopUpdateTransport.ts";
 import { normalizeDesktopUpdateReleaseNotes } from "./releaseNotes.ts";
 import { desktopUpdateChannelOf } from "@t3tools/shared/cliRelease";
 import { compareSemverVersions } from "@t3tools/shared/semver";
@@ -56,7 +55,7 @@ import {
 const CHANNEL_CHANGE_RETRY_DELAY = Duration.seconds(1);
 const CHANNEL_CHANGE_RETRIES = 30;
 const AUTO_UPDATE_STARTUP_DELAY = "15 seconds";
-const AUTO_UPDATE_POLL_INTERVAL = "4 minutes";
+const AUTO_UPDATE_POLL_INTERVAL = "6 hours";
 const PREPARED_INSTALL_CHECK_WAIT = Duration.seconds(90);
 
 type UpdateAction = "check" | "download" | "install" | "install-recovery" | "channel";
@@ -64,9 +63,6 @@ type UpdateAction = "check" | "download" | "install" | "install-recovery" | "cha
 interface DesktopPreparedUpdateInstallResult extends DesktopUpdateActionResult {
   readonly failed: boolean;
 }
-
-const AppUpdateYmlConfig = Schema.Record(Schema.String, Schema.String);
-type AppUpdateYmlConfig = typeof AppUpdateYmlConfig.Type;
 
 const UpdateInfo = Schema.Struct({
   version: Schema.String,
@@ -85,7 +81,6 @@ const DesktopUpdateInstallRecord = Schema.fromJsonString(
 const decodeInstallRecord = Schema.decodeUnknownEffect(DesktopUpdateInstallRecord);
 const encodeInstallRecord = Schema.encodeEffect(DesktopUpdateInstallRecord);
 
-const decodeAppUpdateYmlConfig = Schema.decodeUnknownEffect(AppUpdateYmlConfig);
 const decodeUpdateInfo = Schema.decodeUnknownEffect(UpdateInfo);
 const decodeDownloadProgressInfo = Schema.decodeUnknownEffect(DownloadProgressInfo);
 
@@ -130,7 +125,12 @@ export class DesktopUpdatePollerError extends Schema.TaggedError<DesktopUpdatePo
 export class DesktopUpdateEventHandlingError extends Schema.TaggedError<DesktopUpdateEventHandlingError>()(
   "DesktopUpdateEventHandlingError",
   {
-    event: Schema.Literals(["update-available", "download-progress", "update-downloaded"]),
+    event: Schema.Literals([
+      "update-available",
+      "update-staging-error",
+      "download-progress",
+      "update-downloaded",
+    ]),
     cause: Schema.Defect(),
   },
 ) {
@@ -181,6 +181,7 @@ export const DesktopUpdateSetChannelError = Schema.Union([
   DesktopUpdateChannelManagedError,
 ]);
 export type DesktopUpdateSetChannelError = typeof DesktopUpdateSetChannelError.Type;
+export const isDesktopUpdateSetChannelError = Schema.is(DesktopUpdateSetChannelError);
 
 export class DesktopUpdates extends Context.Service<
   DesktopUpdates,
@@ -278,21 +279,6 @@ export function describeUpdateErrorCause(cause: unknown): string {
   }
 }
 
-function parseAppUpdateYml(raw: string): Effect.Effect<Option.Option<AppUpdateYmlConfig>> {
-  const entries: Record<string, string> = {};
-  for (const line of raw.split("\n")) {
-    const match = line.match(/^(\w+):\s*(.+)$/);
-    if (match?.[1] && match[2]) {
-      entries[match[1]] = match[2].trim();
-    }
-  }
-
-  return decodeAppUpdateYmlConfig(entries).pipe(
-    Effect.map((config) => (config.provider ? Option.some(config) : Option.none())),
-    Effect.orElseSucceed(() => Option.none<AppUpdateYmlConfig>()),
-  );
-}
-
 function createBaseUpdateState(
   channel: DesktopUpdateChannel,
   disabledReason: Option.Option<string>,
@@ -333,32 +319,21 @@ function getAutoUpdateDisabledReason(args: {
   policy: DesktopUpdatePolicy.UpdatePolicy;
   isDevelopment: boolean;
   isPackaged: boolean;
-  platform: NodeJS.Platform;
-  appImage?: string | undefined;
-  isDebPackage: boolean;
   disabledByEnv: boolean;
-  hasUpdateFeedConfig: boolean;
+  transportDisabledReason: string | null;
 }): string | null {
+  // An administrator's policy still turns P3 updates off; its feedUrl does not apply (P3's own
+  // transport owns the update source).
   if (args.policy.mode === "off") {
     return args.policy.message ?? "Updates are turned off on this machine.";
-  }
-  if (!args.hasUpdateFeedConfig) {
-    return "Automatic updates are not available because no update feed is configured.";
   }
   if (args.isDevelopment || !args.isPackaged) {
     return "Automatic updates are only available in packaged production builds.";
   }
   if (args.disabledByEnv) {
-    return "Automatic updates are disabled by the T3CODE_DISABLE_AUTO_UPDATE setting.";
+    return "P3 Code updates are disabled by the P3CODE_DISABLE_AUTO_UPDATE emergency setting.";
   }
-  if (args.platform === "linux" && !args.appImage && !args.isDebPackage) {
-    return "Automatic updates on Linux require the AppImage or the .deb package.";
-  }
-  return null;
-}
-
-function isArm64HostRunningIntelBuild(runtimeInfo: DesktopRuntimeInfo): boolean {
-  return runtimeInfo.hostArch === "arm64" && runtimeInfo.appArch === "x64";
+  return args.transportDisabledReason;
 }
 
 /** @public */
@@ -366,16 +341,13 @@ export const make = Effect.gen(function* () {
   const config = yield* DesktopConfig.DesktopConfig;
   const pool = yield* DesktopBackendPool.DesktopBackendPool;
   const desktopState = yield* DesktopState.DesktopState;
-  const electronUpdater = yield* ElectronUpdater.ElectronUpdater;
+  const updateTransport = yield* DesktopUpdateTransport.DesktopUpdateTransport;
   const electronWindow = yield* ElectronWindow.ElectronWindow;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const fileSystem = yield* FileSystem.FileSystem;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
   const policy = yield* DesktopUpdatePolicy.DesktopUpdatePolicy;
-  // Any user can set the mock flag, so it never replaces an administrator's update source.
-  const mockUpdates = config.mockUpdates && policy.message === null;
 
-  const appUpdateYmlConfigRef = yield* Ref.make<Option.Option<AppUpdateYmlConfig>>(Option.none());
   const activeUpdateActionRef = yield* Ref.make<Option.Option<UpdateAction>>(Option.none());
   const installRunningBackendsRef = yield* Ref.make<
     ReadonlyArray<DesktopBackendPool.DesktopBackendInstance>
@@ -431,46 +403,15 @@ export const make = Effect.gen(function* () {
       }),
     );
 
-  const readAppUpdateYml = fileSystem.readFileString(environment.appUpdateYmlPath, "utf-8").pipe(
-    Effect.option,
-    Effect.flatMap(
-      Option.match({
-        onNone: () => Effect.succeed(Option.none<AppUpdateYmlConfig>()),
-        onSome: parseAppUpdateYml,
-      }),
-    ),
-  );
-
-  // electron-updater uses this marker to install .deb updates with dpkg.
-  const isDebPackage =
-    environment.platform === "linux" && environment.isPackaged
-      ? yield* fileSystem
-          .readFileString(environment.path.join(environment.resourcesPath, "package-type"))
-          .pipe(
-            Effect.map((packageType) => packageType.trim() === "deb"),
-            Effect.orElseSucceed(() => false),
-          )
-      : false;
-
-  const hasUpdateFeedConfig = Ref.get(appUpdateYmlConfigRef).pipe(
-    Effect.map(
-      (appUpdateYmlConfig) =>
-        Option.isSome(appUpdateYmlConfig) || mockUpdates || policy.feedUrl !== undefined,
-    ),
-  );
-
   const resolveDisabledReason = Effect.gen(function* () {
-    const hasFeedConfig = yield* hasUpdateFeedConfig;
+    const transportDisabledReason = yield* updateTransport.disabledReason;
     return Option.fromNullishOr(
       getAutoUpdateDisabledReason({
         policy,
         isDevelopment: environment.isDevelopment,
         isPackaged: environment.isPackaged,
-        platform: environment.platform,
-        appImage: Option.getOrUndefined(config.appImagePath),
-        isDebPackage,
-        disabledByEnv: config.disableAutoUpdate,
-        hasUpdateFeedConfig: hasFeedConfig,
+        disabledByEnv: config.disableP3AutoUpdate,
+        transportDisabledReason,
       }),
     );
   });
@@ -514,24 +455,15 @@ export const make = Effect.gen(function* () {
     channel: DesktopUpdateChannel,
   ) {
     yield* Effect.annotateCurrentSpan({ channel });
-    const allowsPrerelease = channel === "nightly";
-    yield* electronUpdater.setChannel(channel);
-    yield* electronUpdater.setAllowPrerelease(allowsPrerelease);
-    // An older build can lack migrations this one ran. Only a guarded track switch's own check
-    // may offer one.
-    yield* electronUpdater.setAllowDowngrade(false);
-    yield* electronUpdater.setFullChangelog(allowsPrerelease);
+    yield* updateTransport.setChannel(channel);
     yield* logUpdaterInfo("using update channel", {
       channel,
-      allowPrerelease: allowsPrerelease,
-      fullChangelog: allowsPrerelease,
     });
   });
 
   const checkForUpdates = Effect.fn("desktop.updates.checkForUpdates")(function* (
     reason: string,
     actionReservation: "acquire" | "held" = "acquire",
-    allowDowngrade = false,
   ) {
     yield* Effect.annotateCurrentSpan({ reason });
     if (yield* Ref.get(desktopState.quitting)) return false;
@@ -555,29 +487,28 @@ export const make = Effect.gen(function* () {
       yield* setState(reduceDesktopUpdateStateOnCheckStart(state, checkedAt));
       yield* logUpdaterInfo("checking for updates", { reason });
 
-      // The flag is shared updater state, so it flips only while this check holds the reservation.
-      const restoreDowngrade = yield* electronUpdater.allowDowngrade;
-      if (allowDowngrade) yield* electronUpdater.setAllowDowngrade(true);
-      return yield* electronUpdater.checkForUpdates.pipe(
-        Effect.ensuring(electronUpdater.setAllowDowngrade(restoreDowngrade).pipe(Effect.ignore)),
-        Effect.as(true),
-        Effect.catchTags({
-          ElectronUpdaterCheckForUpdatesError: Effect.fn(
-            "desktop.updates.handleCheckForUpdatesFailure",
-          )(function* (error) {
-            const failedAt = yield* currentIsoTimestamp;
-            yield* updateState((current) =>
-              reduceDesktopUpdateStateOnCheckFailure(current, error.message, failedAt),
-            );
-            yield* logUpdaterError(error.message, {
-              errorTag: error._tag,
-              cause: describeUpdateErrorCause(error.cause),
-              channel: error.channel,
-            });
-            return true;
+      return yield* updateTransport
+        .checkForUpdates({
+          force: reason !== "startup" && reason !== "poll",
+        })
+        .pipe(
+          Effect.as(true),
+          Effect.catchTags({
+            DesktopUpdateTransportCheckError: Effect.fn(
+              "desktop.updates.handleCheckForUpdatesFailure",
+            )(function* (error) {
+              const failedAt = yield* currentIsoTimestamp;
+              yield* updateState((current) =>
+                reduceDesktopUpdateStateOnCheckFailure(current, error.message, failedAt),
+              );
+              yield* logUpdaterError(error.message, {
+                errorTag: error._tag,
+                cause: describeUpdateErrorCause(error.cause),
+              });
+              return true;
+            }),
           }),
-        }),
-      );
+        );
     });
 
     return yield* actionReservation === "held"
@@ -600,15 +531,12 @@ export const make = Effect.gen(function* () {
 
     return yield* Effect.gen(function* () {
       yield* setState(reduceDesktopUpdateStateOnDownloadStart(state));
-      yield* electronUpdater.setDisableDifferentialDownload(
-        isArm64HostRunningIntelBuild(environment.runtimeInfo),
-      );
       yield* logUpdaterInfo("downloading update");
-      yield* electronUpdater.downloadUpdate;
+      yield* updateTransport.downloadUpdate;
       return { accepted: true, completed: true };
     }).pipe(
       Effect.catchTags({
-        ElectronUpdaterDownloadUpdateError: Effect.fn("desktop.updates.handleDownloadFailure")(
+        DesktopUpdateTransportDownloadError: Effect.fn("desktop.updates.handleDownloadFailure")(
           function* (error) {
             yield* updateState((current) =>
               reduceDesktopUpdateStateOnDownloadFailure(current, error.message),
@@ -616,7 +544,6 @@ export const make = Effect.gen(function* () {
             yield* logUpdaterError(error.message, {
               errorTag: error._tag,
               cause: describeUpdateErrorCause(error.cause),
-              channel: error.channel,
             });
             return { accepted: true, completed: false };
           },
@@ -824,22 +751,16 @@ export const make = Effect.gen(function* () {
               instance.stop({ timeout: DesktopBackendManager.BACKEND_QUIT_STOP_TIMEOUT }),
             { concurrency: "unbounded" },
           );
-          yield* electronUpdater.quitAndInstall({
-            isSilent: true,
-            isForceRunAfter: true,
-          });
+          yield* updateTransport.quitAndInstall;
           return { accepted: true, completed: false, failed: false };
         }).pipe(
           Effect.catchTags({
-            ElectronUpdaterQuitAndInstallError: Effect.fn("desktop.updates.handleInstallFailure")(
+            DesktopUpdateTransportInstallError: Effect.fn("desktop.updates.handleInstallFailure")(
               function* (error) {
                 yield* recoverFailedInstall(error.message);
                 yield* logUpdaterError(error.message, {
                   errorTag: error._tag,
                   cause: describeUpdateErrorCause(error.cause),
-                  channel: error.channel,
-                  isSilent: error.isSilent,
-                  isForceRunAfter: error.isForceRunAfter,
                 });
                 return { accepted: true, completed: false, failed: true };
               },
@@ -1057,6 +978,17 @@ export const make = Effect.gen(function* () {
     );
   });
 
+  const handleUpdateStagingError = Effect.fn("desktop.updates.handleUpdateStagingError")(function* (
+    cause: unknown,
+  ) {
+    const message =
+      cause instanceof Error ? cause.message : "P3 Code could not prepare the available update.";
+    yield* updateState((current) => reduceDesktopUpdateStateOnDownloadFailure(current, message));
+    yield* logUpdaterError(message, {
+      event: "update-staging-error",
+    });
+  });
+
   const handleUpdateDownloaded = Effect.fn("desktop.updates.handleUpdateDownloaded")(function* (
     raw: unknown,
   ) {
@@ -1119,9 +1051,8 @@ export const make = Effect.gen(function* () {
         void Effect.runPromiseWith(context)(effect);
       };
 
-      const appUpdateYmlConfig = yield* readAppUpdateYml;
-      yield* Ref.set(appUpdateYmlConfigRef, appUpdateYmlConfig);
-
+      // The "install did not apply" record is transport-neutral: it compares the
+      // version that started the install with the one running now.
       const notAppliedVersion = yield* readNotAppliedInstallVersion;
       yield* Ref.set(notAppliedVersionRef, notAppliedVersion);
       if (Option.isSome(notAppliedVersion)) {
@@ -1131,67 +1062,64 @@ export const make = Effect.gen(function* () {
         });
       }
 
-      if (mockUpdates) {
-        yield* electronUpdater.setFeedURL({
-          provider: "generic",
-          url: `http://localhost:${config.mockUpdateServerPort}`,
-        } as ElectronUpdater.ElectronUpdaterFeedUrl);
-      } else if (policy.feedUrl !== undefined) {
-        // The administrator's mirror replaces the GitHub feed baked into app-update.yml.
-        yield* electronUpdater.setFeedURL({
-          provider: "generic",
-          url: policy.feedUrl,
-        } as ElectronUpdater.ElectronUpdaterFeedUrl);
+      if (policy.feedUrl !== undefined) {
+        // P3 updates come from its own transport; an electron-updater mirror cannot apply.
+        yield* logUpdaterWarning("ignoring the managed update feed URL", {
+          feedUrl: policy.feedUrl,
+        });
       }
 
-      const settings = yield* desktopSettings.get;
       const disabledReason = yield* resolveDisabledReason;
-      yield* setState(
-        yield* baseUpdateState(
-          settings.updateChannel,
-          Option.orElse(disabledReason, () => channelBlockedReason(settings.updateChannel)),
-        ),
-      );
+      // P3 has one release feed. Never let a persisted upstream T3
+      // nightly preference redirect or suppress the P3 release feed.
+      const updateChannel = "latest" as const;
+      yield* setState(yield* baseUpdateState(updateChannel, disabledReason));
       if (Option.isSome(disabledReason)) {
         return;
       }
       yield* Ref.set(updaterConfiguredRef, true);
 
-      yield* electronUpdater.setAutoDownload(false);
-      yield* electronUpdater.setAutoInstallOnAppQuit(false);
-      yield* applyAutoUpdaterChannel(settings.updateChannel);
-      yield* electronUpdater.setDisableDifferentialDownload(
-        isArm64HostRunningIntelBuild(environment.runtimeInfo),
-      );
+      yield* applyAutoUpdaterChannel(updateChannel);
 
-      if (isArm64HostRunningIntelBuild(environment.runtimeInfo)) {
-        yield* logUpdaterInfo(
-          "Apple Silicon host detected while running Intel build; updates will switch to arm64 packages",
-        );
-      }
-
-      yield* electronUpdater.on("checking-for-update", () => {
+      yield* updateTransport.on("checking-for-update", () => {
         runEffect(
           logUpdaterInfo("looking for updates").pipe(
             Effect.withSpan("desktop.updates.handleCheckingForUpdate"),
           ),
         );
       });
-      yield* electronUpdater.on("update-available", (info: unknown) => {
+      yield* updateTransport.on("update-available", (info: unknown) => {
         runEffect(handleUpdateAvailable(info));
       });
-      yield* electronUpdater.on("update-not-available", () => {
+      yield* updateTransport.on("update-not-available", () => {
         runEffect(handleUpdateNotAvailable);
       });
-      yield* electronUpdater.on("error", (error: unknown) => {
+      yield* updateTransport.on("error", (error: unknown) => {
         runEffect(handleUpdaterError(error));
       });
-      yield* electronUpdater.on("download-progress", (progress: unknown) => {
+      yield* updateTransport.on("update-staging-error", (error: unknown) => {
+        runEffect(handleUpdateStagingError(error));
+      });
+      yield* updateTransport.on("download-progress", (progress: unknown) => {
         runEffect(handleDownloadProgress(progress));
       });
-      yield* electronUpdater.on("update-downloaded", (info: unknown) => {
+      yield* updateTransport.on("update-downloaded", (info: unknown) => {
         runEffect(handleUpdateDownloaded(info));
       });
+
+      const previousInstallFailure = yield* updateTransport.previousInstallFailure;
+      if (previousInstallFailure !== null) {
+        yield* updateState((current) => ({
+          ...current,
+          status: "error",
+          message: previousInstallFailure,
+          errorContext: "install",
+          canRetry: true,
+        }));
+        yield* logUpdaterWarning("previous update install failed", {
+          message: previousInstallFailure,
+        });
+      }
 
       yield* startUpdatePollers;
     }).pipe(Effect.withSpan("desktop.updates.configure")),
@@ -1251,18 +1179,15 @@ export const make = Effect.gen(function* () {
         }
 
         yield* applyAutoUpdaterChannel(nextChannel);
-        // Only leaving the running build's track can need an older release.
-        yield* checkForUpdates(
-          "channel-change",
-          "held",
-          nextChannel !== desktopUpdateChannelOf(environment.appVersion),
-        );
+        // P3's transport has no downgrade switch; it installs the feed's current version.
+        yield* checkForUpdates("channel-change", "held");
         return yield* Ref.get(updateStateRef);
       }).pipe(Effect.ensuring(finishUpdateAction("channel")));
     }),
+    // `_options.allowDowngrade` is for electron-updater track switches; P3's transport has no downgrade.
     check: Effect.fn("desktop.updates.check")(function* (
       reason: string,
-      options?: { readonly allowDowngrade?: boolean },
+      _options?: { readonly allowDowngrade?: boolean },
     ) {
       yield* Effect.annotateCurrentSpan({ reason });
       if (!(yield* Ref.get(updaterConfiguredRef))) {
@@ -1271,7 +1196,7 @@ export const make = Effect.gen(function* () {
           state: yield* Ref.get(updateStateRef),
         };
       }
-      const checked = yield* checkForUpdates(reason, "acquire", options?.allowDowngrade === true);
+      const checked = yield* checkForUpdates(reason);
       return {
         checked,
         state: yield* Ref.get(updateStateRef),

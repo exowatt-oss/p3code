@@ -519,6 +519,9 @@ export const resolveServerConfig = Effect.fn("config.resolveServerConfig")(funct
     desktopBrowserFd,
     desktopBrowserControlFd,
     resourceMonitorPath,
+    ...(bootstrap?.harnessEnvironment === undefined
+      ? {}
+      : { harnessEnvironment: bootstrap.harnessEnvironment }),
     autoBootstrapProjectFromCwd,
     logWebSocketEvents,
     tailscaleServeEnabled,

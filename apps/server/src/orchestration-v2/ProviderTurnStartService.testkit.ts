@@ -24,6 +24,11 @@ export const layer = Layer.merge(
   Layer.mock(GitWorkflow.GitWorkflowService)({
     pruneWorktrees: () => Effect.void,
     createWorktree: () => Effect.succeed({} as never),
+    invalidateLocalStatus: () => Effect.void,
+    // Replay fixtures use a freshly committed Git workspace. An unimplemented
+    // Layer.mock method never completes and would strand worktree-bound runs.
+    localStatus: () =>
+      Effect.succeed({ isRepo: true, refName: "main", hasWorkingTreeChanges: false } as never),
   }),
   Layer.mock(ProjectService.ProjectService)({
     getById: () => Effect.succeedNone,

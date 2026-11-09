@@ -1,4 +1,8 @@
-import type { ThreadStructure, ThreadStructureRuntime } from "@t3tools/client-runtime/state/shell";
+import type {
+  ThreadStructure,
+  ThreadStructureRuntime,
+  ThreadStructureVisibleTurnItem,
+} from "@t3tools/client-runtime/state/shell";
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
 import {
   type AssetResource,
@@ -112,7 +116,61 @@ export type TimelineAttempt = Pick<
   "id" | "runId" | "attemptOrdinal" | "rootNodeId" | "status" | "completedAt"
 >;
 
+type WorkspaceStateItem = Extract<OrchestrationV2TurnItem, { type: "workspace_state" }>;
+
+export type WorkspaceState = {
+  readonly id: string;
+  readonly providerTurnId: OrchestrationV2TurnItem["providerTurnId"];
+  readonly createdAt: string;
+  readonly endState: WorkspaceStateItem["payload"]["endState"];
+  readonly question: string | null;
+  readonly openItems: ReadonlyArray<string>;
+  readonly feadsEpic: string | null;
+  readonly recordedAt: string;
+};
+
+function workspaceStateFromItem(item: WorkspaceStateItem): WorkspaceState {
+  return {
+    id: item.id,
+    providerTurnId: item.providerTurnId,
+    createdAt: DateTime.formatIso(item.startedAt ?? item.updatedAt),
+    endState: item.payload.endState,
+    question: item.payload.question ?? null,
+    openItems: item.payload.openItems,
+    feadsEpic: item.payload.feadsEpic ?? null,
+    recordedAt: item.payload.recordedAt,
+  };
+}
+
+// Reads the quiet thread structure: workspace_state items never stream, so they are all there.
+export function deriveWorkspaceStates(
+  items: ReadonlyArray<ThreadStructureVisibleTurnItem>,
+): WorkspaceState[] {
+  return items.flatMap(({ item }) =>
+    item.type === "workspace_state" ? [workspaceStateFromItem(item)] : [],
+  );
+}
+
+/** A new provider turn supersedes the previous hand-back immediately. */
+export function deriveLatestWorkspaceState(
+  items: ReadonlyArray<ThreadStructureVisibleTurnItem>,
+  latestProviderTurnId: OrchestrationV2TurnItem["providerTurnId"],
+): WorkspaceState | null {
+  if (latestProviderTurnId === null) return null;
+  return (
+    deriveWorkspaceStates(items).findLast(
+      (state) => state.providerTurnId === latestProviderTurnId,
+    ) ?? null
+  );
+}
+
 export type TimelineEntry = (
+  | {
+      readonly id: string;
+      readonly kind: "workspace-state";
+      readonly createdAt: string;
+      readonly workspaceState: WorkspaceState;
+    }
   | {
       readonly id: string;
       readonly kind: "message";
@@ -613,6 +671,16 @@ export function deriveTimelineEntriesFromVisibleTurnItems(
     const createdAt = projectedItemCreatedAt(row);
     const attempt = resolveAttempt(item);
     const attemptMetadata = attempt === undefined ? {} : { attempt };
+    if (item.type === "workspace_state") {
+      entries.push({
+        id: item.id,
+        kind: "workspace-state",
+        createdAt,
+        workspaceState: workspaceStateFromItem(item),
+        ...attemptMetadata,
+      });
+      continue;
+    }
     if (item.type === "notification") {
       entries.push({
         id: item.id,

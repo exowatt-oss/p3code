@@ -54,6 +54,7 @@ import {
 } from "@t3tools/contracts";
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
+  CircleEllipsisIcon,
   ArrowLeftIcon,
   BugIcon,
   ChartNoAxesColumnIcon,
@@ -68,7 +69,11 @@ import {
   LinkIcon,
   MessageSquareIcon,
   PaletteIcon,
+  RefreshCwIcon,
   RotateCcwIcon,
+  ScrollTextIcon,
+  SparklesIcon,
+  ServerIcon,
   SettingsIcon,
   MonitorIcon,
   PinIcon,
@@ -93,7 +98,6 @@ import { useAtomValue } from "@effect/atom-react";
 import { isDesktopLocalConnectionTarget } from "../connection/desktopLocal";
 import { useDesktopLocalBootstraps } from "../connection/useDesktopLocalBootstraps";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
-import { useOpenPanelPullRequestUrl } from "../hooks/useOpenPanelPullRequestUrl";
 import { copyThreadReference } from "../lib/copyThreadReference";
 import {
   queueWorkspaceFocusFromPalette,
@@ -106,6 +110,8 @@ import {
 } from "./promptLinks/copyPromptLink";
 import { useClientSettings } from "../hooks/useSettings";
 import { useStableCallback } from "../hooks/useStableCallback";
+import { useRestartPhiSessions } from "../hooks/useRestartProviderSessions";
+import { toastProviderSessionsRestart } from "../lib/restartSessionToast";
 import { readLocalApi } from "../localApi";
 import { configuredHostedAppUrl } from "../hostedPairing";
 import { desktopLocalBackendId } from "../connection/desktopLocal";
@@ -113,11 +119,16 @@ import { filesystemEnvironment, useFilesystemReadAccess } from "../state/filesys
 import { projectEnvironment } from "../state/projects";
 import { useEnvironmentQuery } from "../state/query";
 import { serverEnvironment } from "../state/server";
-import { threadEnvironment } from "../state/threads";
 import { readEnvironmentScope, useEnvironmentScope } from "~/state/session";
+import { useRestartThreadSession } from "../hooks/useRestartThreadSession";
 import { sourceControlEnvironment } from "../state/sourceControl";
 import { useAtomCommand } from "../state/use-atom-command";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
+import { environmentCatalog } from "../connection/catalog";
+import {
+  EXOWATT_PUSH_DEV_SERVER_LABEL,
+  resolveExowattPushDevServerAction,
+} from "./chat/exowattRemoteServer";
 import { useAtomQueryRunner } from "../state/use-atom-query-runner";
 import { useScratchProject } from "../hooks/useScratchProject";
 import { useStartTriage } from "../hooks/useStartTriage";
@@ -161,7 +172,7 @@ import {
   useCommandPaletteMount,
   useCommandPaletteStore,
 } from "../commandPaletteStore";
-import { PULL_REQUESTS_PANEL_REF, useRightPanelStore } from "../rightPanelStore";
+import { useRightPanelStore } from "../rightPanelStore";
 import { getLatestThreadForProject, sortThreads } from "@t3tools/client-runtime/state/thread-sort";
 import {
   cn,
@@ -260,6 +271,14 @@ import { ComposerHandleContext, useComposerHandleContext } from "../composerHand
 import type { ChatComposerHandle } from "./chat/ChatComposer";
 import { pickableProjectGroups } from "@t3tools/client-runtime/state/project-grouping";
 import { buildSidebarProjectPickerEntries } from "../sidebarProjectGrouping";
+import { EXOWATT_CHANGELOG_LABEL, EXOWATT_CHANGELOG_ROUTE } from "./exowatt/exowattChangelog";
+import { useExowattOpenLogs } from "./exowatt/ExowattLogsButton";
+import {
+  buildExowattPaletteMenu,
+  EXOWATT_PALETTE_MENU_GROUP,
+  EXOWATT_PALETTE_MENU_TITLE,
+  makeExowattAboutItem,
+} from "./exowatt/exowattPaletteMenu";
 import { PullRequestGlyph } from "~/components/pullRequest/pullRequestIcons";
 import { readPullRequestListPreferences } from "~/components/pullRequest/pullRequestListPreferences";
 import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
@@ -286,6 +305,13 @@ function openIntentView(intent: CommandPaletteOpenIntent | null): CommandPalette
       return {
         addonIcon: <PaletteIcon className={ADDON_ICON_CLASS} />,
         groups: [{ value: "themes", label: "Change theme", items: [] }],
+      };
+    case "exowatt-menu":
+      return {
+        addonIcon: <CircleEllipsisIcon className={ADDON_ICON_CLASS} />,
+        groups: [
+          { value: EXOWATT_PALETTE_MENU_GROUP, label: EXOWATT_PALETTE_MENU_TITLE, items: [] },
+        ],
       };
     case "search":
     case undefined:
@@ -400,6 +426,7 @@ function OpenCommandPaletteDialog(props: {
 }) {
   const navigate = useNavigate();
   const pathname = useLocation({ select: (location) => location.pathname });
+  const exowattLogs = useExowattOpenLogs();
   const { openChildSearch, setOpen } = props;
   // Keyed by palette session: the intent and restored search only seed this
   // mount, and closing must not change what the closing palette shows.
@@ -437,6 +464,9 @@ function OpenCommandPaletteDialog(props: {
     setHighlightedItemValue(null);
   }
   const clientSettings = useClientSettings(selectCommandPaletteClientSettings);
+  const exowattRetryEnvironment = useAtomCommand(environmentCatalog.retryNow, {
+    reportFailure: false,
+  });
   const createProject = useAtomCommand(projectEnvironment.create, {
     reportFailure: false,
   });
@@ -455,9 +485,7 @@ function OpenCommandPaletteDialog(props: {
   const startProjectClone = useAtomCommand(sourceControlEnvironment.startProjectClone, {
     reportFailure: false,
   });
-  const stopThreadSession = useAtomCommand(threadEnvironment.stopSession, {
-    reportFailure: false,
-  });
+  const restartThreadSession = useRestartThreadSession();
   const refreshProviders = useAtomCommand(serverEnvironment.refreshProviders, {
     reportFailure: false,
   });
@@ -468,16 +496,13 @@ function OpenCommandPaletteDialog(props: {
   const { activeDraftThread, activeThread, defaultProjectRef, handleNewThread } =
     useHandleNewThread();
   const paletteRouteTarget = useThreadRouteTarget();
+  const restartAllPhiSessions = useRestartPhiSessions();
   const projects = useProjects();
-  const referenceThreadRef =
-    pathname === "/pull-requests"
-      ? environments.some((environment) => environment.serverConfig !== null)
-        ? PULL_REQUESTS_PANEL_REF
-        : null
-      : activeThread
-        ? scopeThreadRef(activeThread.environmentId, activeThread.id)
-        : null;
-  const openPanelPullRequestUrl = useOpenPanelPullRequestUrl(referenceThreadRef);
+  // exowatt: Copy thread link always copies the open thread as `[title](p3://thread/<id>)`
+  // (threadReference.ts ignores PRs), so the pull-requests page has no copy target.
+  const referenceThreadRef = activeThread
+    ? scopeThreadRef(activeThread.environmentId, activeThread.id)
+    : null;
   const activeThreadServerConfig = useServerConfigs().get(
     activeThread?.environmentId ?? ("" as EnvironmentId),
   );
@@ -485,12 +510,11 @@ function OpenCommandPaletteDialog(props: {
     canShareWithGuestAtom(activeThread?.environmentId ?? ("" as EnvironmentId)),
   );
   const activeThreadReferenceCopyTarget =
-    referenceThreadRef === null || (pathname === "/pull-requests" && !openPanelPullRequestUrl)
+    referenceThreadRef === null
       ? null
       : resolveThreadReferenceCopyTarget({
           threadRef: referenceThreadRef,
           title: activeThread?.title ?? "",
-          openPanelPullRequestUrl,
           pullRequests: activeThread?.pullRequests,
           linkedPullRequestUrl:
             activeThread?.linkedPullRequest?.url ?? activeThread?.branchPullRequest?.url ?? null,
@@ -1293,6 +1317,19 @@ function OpenCommandPaletteDialog(props: {
     });
   }
 
+  // Exowatt: stops every idle Phi session so the next message picks up a new binary.
+  actionItems.push({
+    kind: "action",
+    value: "action:restart-all-phi-sessions",
+    searchTerms: ["restart all phi sessions", "reload phi", "provider processes"],
+    title: "Restart all phi sessions",
+    description: "Stops idle Phi processes so the next message starts the latest binary.",
+    icon: <RefreshCwIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      toastProviderSessionsRestart(await restartAllPhiSessions());
+    },
+  });
+
   if (scratchTargetEnvironmentId !== null) {
     actionItems.push({
       kind: "action",
@@ -1387,9 +1424,12 @@ function OpenCommandPaletteDialog(props: {
       searchTerms:
         activeThreadReferenceCopyTarget.kind === "pull-request"
           ? ["copy", "pull request", "link", "reference"]
-          : ["copy", "thread", "thread id", "reference"],
+          : ["copy", "thread", "thread link", "thread id", "reference"],
+      // exowatt: the thread form copies the `[title](p3://thread/<id>)` link.
       title:
-        activeThreadReferenceCopyTarget.kind === "pull-request" ? "Copy PR link" : "Copy thread",
+        activeThreadReferenceCopyTarget.kind === "pull-request"
+          ? "Copy PR link"
+          : "Copy thread link",
       description: activeThreadReferenceCopyTarget.description,
       icon: <LinkIcon className={ITEM_ICON_CLASS} />,
       shortcutCommand: "thread.copyReference",
@@ -1449,18 +1489,7 @@ function OpenCommandPaletteDialog(props: {
       icon: <RotateCcwIcon className={ITEM_ICON_CLASS} />,
       run: async () => {
         const { environmentId } = thread;
-        if (thread.runtime !== null) {
-          const stopped = await stopThreadSession({
-            environmentId,
-            input: { threadId: thread.id },
-          });
-          if (stopped._tag === "Failure") throw squashAtomCommandFailure(stopped);
-        }
-        toastManager.add({
-          type: "success",
-          title: "Agent session will restart",
-          description: "Your next message starts a fresh session.",
-        });
+        if (!(await restartThreadSession(scopeThreadRef(environmentId, thread.id)))) return;
         const project = projectByKey.get(`${environmentId}:${thread.projectId}`);
         if (!project) return;
         const refreshed = await refreshProviders({
@@ -1567,6 +1596,49 @@ function OpenCommandPaletteDialog(props: {
 
   actionItems.push(themeEditorItem);
 
+  // Exowatt (dev builds only): install the worktree's packed server on an SSH
+  // remote as its own versions/ entry, then reconnect to it.
+  for (const environment of environments) {
+    const push = resolveExowattPushDevServerAction({
+      environment,
+      bridge: window.desktopBridge,
+      isDevelopment: import.meta.env.DEV,
+    });
+    if (push === null) continue;
+    actionItems.push({
+      kind: "action",
+      value: `action:exowatt-push-dev-server:${environment.environmentId}`,
+      searchTerms: ["push dev server", "p3", "remote", "ssh", push.host, environment.label],
+      title: `${EXOWATT_PUSH_DEV_SERVER_LABEL}: ${push.host}`,
+      description: "Dev only. Installs the packed worktree server beside the release server.",
+      icon: <ServerIcon className={ITEM_ICON_CLASS} />,
+      run: async () => {
+        try {
+          const result = await push.push();
+          toastManager.add(
+            stackedThreadToast({
+              type: "success",
+              title: `Dev server ${result.version} installed on ${push.host}`,
+              description: "Reconnecting with the pushed server.",
+            }),
+          );
+        } catch (error) {
+          toastManager.add(
+            stackedThreadToast({
+              type: "error",
+              title: "Could not push the dev server",
+              description:
+                error instanceof Error ? error.message : "The remote host rejected the install.",
+            }),
+          );
+          return;
+        }
+        await window.desktopBridge?.disconnectSshEnvironment(push.target);
+        await exowattRetryEnvironment(environment.environmentId);
+      },
+    });
+  }
+
   if (environments.some((environment) => environment.serverConfig !== null)) {
     actionItems.push({
       kind: "action",
@@ -1628,8 +1700,31 @@ function OpenCommandPaletteDialog(props: {
     searchTerms: ["settings", "preferences", "configuration", "keybindings"],
     title: "Open settings",
     icon: <SettingsIcon className={ITEM_ICON_CLASS} />,
+    shortcutCommand: "settings.open",
     run: async () => {
       await navigate({ to: "/settings" });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:exowatt-changelog",
+    searchTerms: ["what's new", "whats new", "changelog", "release notes", "version", "update"],
+    title: EXOWATT_CHANGELOG_LABEL,
+    icon: <SparklesIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await navigate({ to: EXOWATT_CHANGELOG_ROUTE });
+    },
+  });
+
+  actionItems.push({
+    kind: "action",
+    value: "action:exowatt-logs",
+    searchTerms: ["logs", "log folder", "diagnostics", "trace", "debug", "finder", "reveal"],
+    title: exowattLogs.label,
+    icon: <ScrollTextIcon className={ITEM_ICON_CLASS} />,
+    run: async () => {
+      await exowattLogs.openLogs();
     },
   });
 
@@ -1689,6 +1784,10 @@ function OpenCommandPaletteDialog(props: {
     });
   }
 
+  // exowatt: the sidebar footer keeps only update controls; its utilities live in this menu.
+  actionItems.push(makeExowattAboutItem());
+  const exowattMenuItem = buildExowattPaletteMenu(actionItems);
+  actionItems.unshift(exowattMenuItem);
   const rootGroups = buildRootGroups({ actionItems, recentThreadItems });
   // Every setting goes to the palette's own matcher, so settings get the same
   // word starts and typo tolerance as threads.
@@ -1736,7 +1835,9 @@ function OpenCommandPaletteDialog(props: {
             ? changeThemeItem.groups
             : currentView?.groups[0]?.value === "appearance"
               ? changeAppearanceItem.groups
-              : (currentView?.groups ?? rootGroups);
+              : currentView?.groups[0]?.value === EXOWATT_PALETTE_MENU_GROUP
+                ? exowattMenuItem.groups
+                : (currentView?.groups ?? rootGroups);
 
   const isLinkedThreadSearch =
     linkedThreadSearch?.linkedThreads !== undefined && deferredQuery === linkedThreadSearch.query;

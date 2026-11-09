@@ -25,6 +25,7 @@ import {
   type OrchestrationV2ServerCommand,
   type OrchestrationV2StoredEvent,
   type OrchestrationV2ThreadProjection,
+  type RuntimeMode,
   type ServerProvider,
 } from "@t3tools/contracts";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
@@ -1153,6 +1154,7 @@ describe("OrchestratorMcpService provider resolution", () => {
     readonly driver: ProviderDriverKind;
     readonly model?: string;
     readonly enabled?: boolean;
+    readonly supportedRuntimeModes?: ReadonlyArray<RuntimeMode>;
   }): ServerProvider => ({
     instanceId: input.instanceId,
     driver: input.driver,
@@ -1161,7 +1163,7 @@ describe("OrchestratorMcpService provider resolution", () => {
     version: input.enabled === false ? null : "test",
     status: input.enabled === false ? "disabled" : "ready",
     auth: { status: input.enabled === false ? "unknown" : "authenticated" },
-    ...(input.enabled === false ? { message: "Provider is disabled in T3 Code settings." } : {}),
+    ...(input.enabled === false ? { message: "Provider is disabled in P3 Code settings." } : {}),
     checkedAt: "2026-09-13T00:00:00.000Z",
     models:
       input.model === undefined
@@ -1169,6 +1171,9 @@ describe("OrchestratorMcpService provider resolution", () => {
         : [{ slug: input.model, name: input.model, isCustom: false, capabilities: null }],
     slashCommands: [],
     skills: [],
+    ...(input.supportedRuntimeModes === undefined
+      ? {}
+      : { supportedRuntimeModes: input.supportedRuntimeModes }),
   });
 
   const providerRegistryLayer = (providers: ReadonlyArray<ServerProvider>) =>
@@ -1771,6 +1776,105 @@ describe("OrchestratorMcpService provider resolution", () => {
       }),
     );
   });
+
+  it.effect(
+    "delegateTask resolves a requested auto for a target with no auto mode via the target's advertised modes, never to approval-required",
+    () =>
+      Effect.gen(function* () {
+        const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
+        const task = {
+          id: taskId,
+          threadId: parentThreadId,
+          runId: parentRunId,
+          parentNodeId,
+          origin: "app_owned",
+          createdBy: "agent",
+          driver: ProviderDriverKind.make("pi"),
+          providerInstanceId: ProviderInstanceId.make("pi"),
+          providerThreadId: null,
+          childThreadId,
+          nativeTaskRef: null,
+          prompt: "Summarize the diff.",
+          title: null,
+          model: "pi-model",
+          status: "running",
+          result: null,
+          startedAt: null,
+          completedAt: null,
+        };
+        const piInstanceId = ProviderInstanceId.make("pi");
+        let delegated = false;
+        const dependencies = Layer.mergeAll(
+          NodeServices.layer,
+          NodeCrypto.layer,
+          Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+          Layer.mock(ThreadManagementService.ThreadManagementService)({
+            hasReceipt: () => Effect.succeed(false),
+            // The parent thread runs full-access, exercising "phi target +
+            // parent full-access + requested auto -> full-access".
+            getThreadRecords: (threadId) =>
+              Effect.succeed(
+                threadId === parentThreadId
+                  ? parentProjection(delegated ? [task] : [])
+                  : childProjection,
+              ),
+            dispatch: (command) =>
+              Ref.update(dispatched, (commands) => [...commands, command]).pipe(
+                Effect.andThen(
+                  Effect.sync(() => {
+                    delegated = true;
+                  }),
+                ),
+                Effect.as({
+                  sequence: 1,
+                  storedEvents: [
+                    {
+                      sequence: 1,
+                      commandId: null,
+                      event: { type: "subagent.updated", payload: task },
+                    },
+                  ],
+                } as never),
+              ),
+          }),
+          providerRegistryLayer([
+            providerSnapshot({
+              instanceId: codexInstanceId,
+              driver: ProviderDriverKind.make("codex"),
+              model: "gpt-5.4",
+            }),
+            // Pi today: no "auto" in its advertised modes.
+            providerSnapshot({
+              instanceId: piInstanceId,
+              driver: ProviderDriverKind.make("pi"),
+              model: "pi-model",
+              supportedRuntimeModes: ["approval-required", "auto-accept-edits", "full-access"],
+            }),
+          ]),
+          adapterRegistryLayer([codexInstanceId, piInstanceId]),
+          Layer.mock(ProjectService.ProjectService)({}),
+          Layer.mock(SecretRequests.SecretRequests)({}),
+          Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+          ServerSettings.layerTest(),
+        );
+
+        yield* Effect.gen(function* () {
+          const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+          const result = yield* service.delegateTask(scope, {
+            task: "Summarize the diff.",
+            target: { providerInstanceId: piInstanceId, model: "pi-model" },
+            runtimeMode: "auto",
+            mode: "async",
+            clientRequestId: "delegate-pi-auto-1",
+          });
+          assert.equal(result.status, "running");
+          const commands = yield* Ref.get(dispatched);
+          assert.equal(commands.length, 1);
+          const request = commands[0] as { runtimeMode: string };
+          assert.equal(request.runtimeMode, "full-access");
+        }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
+      }),
+  );
 
   it.effect("rejects delegation to a provider without a registered adapter", () =>
     Effect.gen(function* () {
@@ -2485,6 +2589,173 @@ describe("OrchestratorMcpService provider resolution", () => {
               assert.equal(request.modelSelection.model, "codex-alt-model", testCase.name);
             }
           }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(layerDependencies))));
+        }
+      }),
+  );
+
+  it.effect(
+    "carries the parent's effort option onto a same-instance target that only overrides the model",
+    () =>
+      Effect.gen(function* () {
+        const driver = ProviderDriverKind.make("codex");
+        const parentModelSelection = {
+          instanceId: codexInstanceId,
+          model: "gpt-5.4",
+          options: [{ id: "reasoningEffort", value: "high" }],
+        } as const;
+        const effortDescriptor = {
+          id: "reasoningEffort",
+          label: "Reasoning effort",
+          type: "select" as const,
+          options: [
+            { id: "medium", label: "Medium" },
+            { id: "low", label: "Low", isDefault: true },
+          ],
+        };
+        const provider: ServerProvider = {
+          instanceId: codexInstanceId,
+          driver,
+          enabled: true,
+          installed: true,
+          version: "test",
+          status: "ready",
+          auth: { status: "authenticated" },
+          checkedAt: "2026-09-13T00:00:00.000Z",
+          models: [
+            { slug: "gpt-5.4", name: "gpt-5.4", isCustom: false, capabilities: null },
+            {
+              slug: "gpt-5.4-mini-with-high",
+              name: "gpt-5.4-mini-with-high",
+              isCustom: false,
+              capabilities: {
+                optionDescriptors: [
+                  {
+                    ...effortDescriptor,
+                    options: [{ id: "high", label: "High" }, ...effortDescriptor.options],
+                  },
+                ],
+              },
+            },
+            {
+              slug: "gpt-5.4-mini-no-high",
+              name: "gpt-5.4-mini-no-high",
+              isCustom: false,
+              capabilities: { optionDescriptors: [effortDescriptor] },
+            },
+            {
+              slug: "gpt-5.4-mini-no-descriptors",
+              name: "gpt-5.4-mini-no-descriptors",
+              isCustom: false,
+              capabilities: null,
+            },
+          ],
+          slashCommands: [],
+          skills: [],
+        };
+        const cases = [
+          {
+            name: "target advertises the exact inherited choice",
+            targetModel: "gpt-5.4-mini-with-high",
+            expectedOptions: [{ id: "reasoningEffort", value: "high" }],
+          },
+          {
+            name: "target lacks the inherited choice but has a default",
+            targetModel: "gpt-5.4-mini-no-high",
+            expectedOptions: [{ id: "reasoningEffort", value: "low" }],
+          },
+          {
+            name: "target advertises no option descriptors",
+            targetModel: "gpt-5.4-mini-no-descriptors",
+            expectedOptions: undefined,
+          },
+        ] as const;
+
+        for (const testCase of cases) {
+          const dispatched = yield* Ref.make<ReadonlyArray<unknown>>([]);
+          let delegated = false;
+          const task = {
+            id: taskId,
+            threadId: parentThreadId,
+            runId: parentRunId,
+            parentNodeId,
+            origin: "app_owned",
+            createdBy: "agent",
+            driver,
+            providerInstanceId: codexInstanceId,
+            providerThreadId: null,
+            childThreadId,
+            nativeTaskRef: null,
+            prompt: "Summarize the diff.",
+            title: null,
+            model: testCase.targetModel,
+            status: "running",
+            result: null,
+            startedAt: null,
+            completedAt: null,
+          };
+          const dependencies = Layer.mergeAll(
+            NodeServices.layer,
+            NodeCrypto.layer,
+            Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+            Layer.mock(ThreadManagementService.ThreadManagementService)({
+              hasReceipt: () => Effect.succeed(false),
+              getThreadRecords: (threadId) =>
+                Effect.succeed(
+                  threadId === parentThreadId
+                    ? parentProjection(delegated ? [task] : [], parentModelSelection)
+                    : childProjection,
+                ),
+              dispatch: (command) =>
+                Ref.update(dispatched, (commands) => [...commands, command]).pipe(
+                  Effect.andThen(
+                    Effect.sync(() => {
+                      delegated = true;
+                    }),
+                  ),
+                  Effect.as({
+                    sequence: 1,
+                    storedEvents: [
+                      {
+                        sequence: 1,
+                        commandId: null,
+                        event: { type: "subagent.updated", payload: task },
+                      },
+                    ],
+                  } as never),
+                ),
+            }),
+            providerRegistryLayer([provider]),
+            adapterRegistryLayer([codexInstanceId]),
+            Layer.mock(ProjectService.ProjectService)({}),
+            Layer.mock(SecretRequests.SecretRequests)({}),
+            Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+            ServerSettings.layerTest(),
+          );
+
+          yield* Effect.gen(function* () {
+            const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+            const result = yield* service.delegateTask(scope, {
+              task: "Summarize the diff.",
+              target: { providerInstanceId: codexInstanceId, model: testCase.targetModel },
+              mode: "async",
+              clientRequestId: `delegate-inherit-effort-${testCase.name}`,
+            });
+            assert.equal(result.status, "running", testCase.name);
+            const commands = yield* Ref.get(dispatched);
+            const request = commands[0] as {
+              modelSelection: {
+                instanceId: string;
+                model: string;
+                options?: ReadonlyArray<{ id: string; value: unknown }>;
+              };
+            };
+            assert.equal(request.modelSelection.model, testCase.targetModel, testCase.name);
+            assert.deepEqual(
+              request.modelSelection.options,
+              testCase.expectedOptions,
+              testCase.name,
+            );
+          }).pipe(Effect.provide(layerOrchestratorService.pipe(Layer.provide(dependencies))));
         }
       }),
   );
@@ -3349,6 +3620,94 @@ describe("OrchestratorMcpService provider resolution", () => {
       Effect.gen(function* () {
         assert.equal(yield* resolveRuntimeMode("full-access", "inherit", muse), "full-access");
         assert.equal(yield* resolveRuntimeMode("auto", undefined, muse), "approval-required");
+      }),
+    );
+
+    // Pi today: no "auto" mode (bullet 1 of the fix). A deliberately bare list
+    // without "auto-accept-edits" or "full-access" in the last test shows the
+    // resolution is driven purely by `supportedRuntimeModes`, never a provider
+    // name check.
+    const phi = {
+      modelSelection: { instanceId: ProviderInstanceId.make("phi"), model: "phi-model" },
+      supportedRuntimeModes: ["approval-required", "auto-accept-edits", "full-access"] as const,
+    };
+    // A Codex-like provider that does support "auto".
+    const codex = {
+      modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+      supportedRuntimeModes: [
+        "approval-required",
+        "auto-accept-edits",
+        "auto",
+        "full-access",
+      ] as const,
+    };
+
+    it.effect(
+      "resolves a requested auto to the parent's full-access mode when the target has no auto mode",
+      () =>
+        Effect.gen(function* () {
+          const resolved = yield* resolveRuntimeMode("full-access", "auto", phi);
+          assert.equal(resolved, "full-access");
+        }),
+    );
+
+    it.effect(
+      "falls back further to auto-accept-edits when the parent is itself auto and the target has no auto mode",
+      () =>
+        Effect.gen(function* () {
+          const resolved = yield* resolveRuntimeMode("auto", "auto", phi);
+          // Must never collapse to "approval-required" -- that is what makes
+          // every tool call prompt for approval instead of running
+          // unattended.
+          assert.equal(resolved, "auto-accept-edits");
+        }),
+    );
+
+    it.effect("resolves an inherited (undefined) auto the same way as an explicit request", () =>
+      Effect.gen(function* () {
+        const resolved = yield* resolveRuntimeMode("auto", undefined, phi);
+        assert.equal(resolved, "auto-accept-edits");
+      }),
+    );
+
+    it.effect("keeps auto when the target provider's advertised modes include it", () =>
+      Effect.gen(function* () {
+        const resolved = yield* resolveRuntimeMode("auto", "auto", codex);
+        assert.equal(resolved, "auto");
+      }),
+    );
+
+    it.effect("still rejects escalation past the parent's mode", () =>
+      Effect.gen(function* () {
+        const result = yield* resolveRuntimeMode("approval-required", "full-access", phi).pipe(
+          Effect.flip,
+        );
+        assert.equal(result.code, "runtime_mode_escalation_denied");
+      }),
+    );
+
+    it.effect("is driven by the target's advertised modes, not a special-cased provider name", () =>
+      Effect.gen(function* () {
+        // A hypothetical provider whose advertised modes omit "auto" just
+        // like Pi's, but with a different set otherwise -- the resolution
+        // must behave identically because it only consults the list.
+        const resolved = yield* resolveRuntimeMode("full-access", "auto", {
+          modelSelection: { instanceId: ProviderInstanceId.make("other"), model: "other-model" },
+          supportedRuntimeModes: ["approval-required", "full-access"],
+        });
+        assert.equal(resolved, "full-access");
+      }),
+    );
+
+    it.effect("treats an undefined or empty supported-modes list as supporting everything", () =>
+      Effect.gen(function* () {
+        const resolvedUndefined = yield* resolveRuntimeMode("auto", "auto", undefined);
+        assert.equal(resolvedUndefined, "auto");
+        const resolvedEmpty = yield* resolveRuntimeMode("auto", "auto", {
+          ...codex,
+          supportedRuntimeModes: [],
+        });
+        assert.equal(resolvedEmpty, "auto");
       }),
     );
   });

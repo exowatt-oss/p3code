@@ -12,6 +12,7 @@ import {
   BrowserSearchEngine,
   BROWSER_CUSTOM_SEARCH_URL_MAX_LENGTH,
   type EnvironmentId,
+  type ExowattPeerInbound,
   BROWSER_PROFILE_NAME_MAX_LENGTH,
   BROWSER_RECORDING_FRAME_RATES,
   DEFAULT_BROWSER_AUTO_SHOW_FLOATING_PREVIEW,
@@ -38,6 +39,7 @@ import {
 } from "@t3tools/contracts";
 import { usePrimaryManagedPolicy } from "~/state/managedPolicy";
 import { isValidSearchUrlTemplate } from "@t3tools/shared/preview";
+import { DEFAULT_UNIFIED_SETTINGS } from "@t3tools/contracts/settings";
 import { PREVIEW_VIEWPORT_PRESETS } from "@t3tools/shared/previewViewport";
 import { MoreVertical, Plus as PlusIcon } from "lucide-react";
 import * as Schema from "effect/Schema";
@@ -103,6 +105,7 @@ import {
   persistClientSettingsUpdate,
   useClientSettings,
   useClientSettingsHydrated,
+  usePrimarySettings,
   useUpdatePrimarySettings,
 } from "~/hooks/useSettings";
 
@@ -648,7 +651,7 @@ function BrowserRecordingFrameRateSetting({ disabled }: { readonly disabled: boo
 
 const LINK_TARGET_LABELS: Readonly<Record<BrowserLinkTarget, string>> = {
   system: "Your default browser",
-  app: "T3 Code",
+  app: "P3 Code",
 };
 
 function BrowserLinkTargetSetting({ disabled }: { readonly disabled: boolean }) {
@@ -785,11 +788,11 @@ export function PullRequestLinksOpenInAppSetting() {
   return (
     <SettingsRow
       {...searchableSetting("pull-request-links-open-in-app")}
-      description="Clicking a pull request link opens it in T3 Code. Turn off to open pull request links like any other link, on your git host."
+      description="Clicking a pull request link opens it in P3 Code. Turn off to open pull request links like any other link, on your git host."
       resetAction={
         openInApp ? null : (
           <SettingResetButton
-            label="open pull requests in T3 Code"
+            label="open pull requests in P3 Code"
             onClick={() => updateSettings({ pullRequestLinksOpenInApp: true })}
           />
         )
@@ -800,7 +803,7 @@ export function PullRequestLinksOpenInAppSetting() {
           onCheckedChange={(checked) =>
             updateSettings({ pullRequestLinksOpenInApp: Boolean(checked) })
           }
-          aria-label="Open pull requests in T3 Code"
+          aria-label="Open pull requests in P3 Code"
         />
       }
     />
@@ -1070,6 +1073,204 @@ function AgentBrowserAccessSetting() {
         />
       }
     />
+  );
+}
+
+// Exowatt: the P3 MCP tools every agent session gets by default.
+function AgentP3ToolsSetting() {
+  const settings = usePrimarySettings();
+  const updateSettings = useUpdatePrimarySettings();
+
+  return (
+    <SettingsRow
+      {...searchableSetting("agent-p3-tools")}
+      title="Agent P3 tools"
+      description="Give every agent session P3's own tools: drive the other threads here, manage projects, change settings and configure harnesses. Destructive actions still need the agent to confirm."
+      status={
+        settings.enableAgentP3Tools
+          ? undefined
+          : "Applies to sessions started from now on; a running agent keeps the tools it was given."
+      }
+      resetAction={
+        settings.enableAgentP3Tools !== DEFAULT_UNIFIED_SETTINGS.enableAgentP3Tools ? (
+          <SettingResetButton
+            label="agent P3 tools"
+            onClick={() =>
+              updateSettings({
+                enableAgentP3Tools: DEFAULT_UNIFIED_SETTINGS.enableAgentP3Tools,
+              })
+            }
+          />
+        ) : null
+      }
+      control={
+        <Switch
+          checked={settings.enableAgentP3Tools}
+          onCheckedChange={(checked) => updateSettings({ enableAgentP3Tools: Boolean(checked) })}
+          aria-label="Allow agent P3 tools"
+        />
+      }
+    />
+  );
+}
+
+// Exowatt: scoped like the other server switches, so "All environments" also turns it on for
+// each connected remote. This is the outbound (forward) control only: whether the other
+// environment's own `exowattPeerInbound` is on never gates it, same as before reverse links
+// existed — this server already holds operate access to everything it connects to.
+function CrossEnvironmentAgentToolsSetting() {
+  const enabled = useScopedSettings((settings) => settings.exowattCrossEnvironmentAgentTools);
+  const updateSettings = useUpdateScopedSettings();
+
+  return (
+    <SettingsRow
+      serverScoped
+      settingKeys={["exowattCrossEnvironmentAgentTools"]}
+      {...searchableSetting("cross-environment-agent-tools")}
+      title="Agents reach my other environments"
+      description="Agents can list, read, message and start threads on your other connected P3 environments. Each environment shows the link under Authorized Clients."
+      control={
+        <ScopedSwitch
+          settingKeys={["exowattCrossEnvironmentAgentTools"]}
+          checked={enabled}
+          onCheckedChange={(checked) =>
+            updateSettings({ exowattCrossEnvironmentAgentTools: Boolean(checked) })
+          }
+          aria-label="Agents reach my other environments"
+        />
+      }
+    />
+  );
+}
+
+const PEER_INBOUND_LABELS: Record<ExowattPeerInbound, string> = {
+  off: "Off",
+  "approval-required": "Approval required",
+  "auto-accept-edits": "Auto-accept edits",
+  "full-access": "Full access",
+};
+const PEER_INBOUND_VALUES = Object.keys(PEER_INBOUND_LABELS) as ReadonlyArray<ExowattPeerInbound>;
+const isPeerInbound = (value: unknown): value is ExowattPeerInbound =>
+  PEER_INBOUND_VALUES.includes(value as ExowattPeerInbound);
+
+// Exowatt: the receiving side's gate and ceiling for *reverse* links, written to one selected
+// environment, never "All"; never gates "Agents reach my other environments" above. Reverse
+// links only ever land on the primary environment (PeerEnvironmentLinkCoordinator reads only
+// `primaryServerSettingsAtom`), so this stays editable only when the primary one is selected.
+function PeerInboundSetting() {
+  const { scope, connectedEnvironments, selectScope } = useSettingsScope();
+  const inbound = useScopedSettings((settings) => settings.exowattPeerInbound);
+  const updateSettings = useUpdateScopedSettings();
+  const primaryEnvironment = usePrimaryEnvironment();
+  const single = scope.kind === "environment";
+  const isPrimarySelected =
+    single &&
+    primaryEnvironment !== null &&
+    scope.environmentId === primaryEnvironment.environmentId;
+  const editable = single && isPrimarySelected;
+  const accepting = connectedEnvironments.flatMap((environment) => {
+    const level = environment.serverConfig?.settings.exowattPeerInbound ?? "off";
+    return level === "off" ? [] : [{ environment, level }];
+  });
+
+  return (
+    <SettingsRow
+      serverScoped
+      settingKeys={["exowattPeerInbound"]}
+      {...searchableSetting("peer-inbound")}
+      title="Agents from my other environments may act here"
+      description={
+        single ? (
+          isPrimarySelected ? (
+            "Lets agents on an SSH-connected environment list, read, message and start threads here, up to this level. Only matters on the machine running the desktop app."
+          ) : (
+            <>
+              Only applies on the machine running the desktop app.{" "}
+              {primaryEnvironment !== null ? (
+                <>
+                  Select{" "}
+                  <Button
+                    variant="link"
+                    size="micro"
+                    onClick={() => selectScope({ machine: primaryEnvironment.environmentId })}
+                  >
+                    This device ({primaryEnvironment.label})
+                  </Button>{" "}
+                  to change it.
+                </>
+              ) : null}
+            </>
+          )
+        ) : (
+          <>
+            Set per environment.{" "}
+            {accepting.length === 0
+              ? "No environment accepts agents from your others."
+              : `Accepting: ${accepting
+                  .map(
+                    ({ environment, level }) =>
+                      `${environment.label} (${PEER_INBOUND_LABELS[level]})`,
+                  )
+                  .join(", ")}.`}{" "}
+            Choose one:{" "}
+            {connectedEnvironments.map((environment, index) => (
+              <span key={environment.environmentId}>
+                {index > 0 ? ", " : null}
+                <Button
+                  variant="link"
+                  size="micro"
+                  onClick={() => selectScope({ machine: environment.environmentId })}
+                >
+                  {environment.label}
+                </Button>
+              </span>
+            ))}
+          </>
+        )
+      }
+      control={
+        <Select
+          disabled={!editable}
+          value={single ? inbound : null}
+          onValueChange={(value) => {
+            if (editable && isPeerInbound(value)) updateSettings({ exowattPeerInbound: value });
+          }}
+        >
+          <SelectTrigger
+            size="sm"
+            className="w-full sm:w-44"
+            aria-label="Agents from my other environments may act here"
+          >
+            <SelectValue>
+              {(value: ExowattPeerInbound | null) =>
+                value === null ? "Per environment" : PEER_INBOUND_LABELS[value]
+              }
+            </SelectValue>
+          </SelectTrigger>
+          <SelectPopup align="end" alignItemWithTrigger={false}>
+            {PEER_INBOUND_VALUES.map((value) => (
+              <SelectItem hideIndicator key={value} value={value}>
+                {PEER_INBOUND_LABELS[value]}
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
+      }
+    />
+  );
+}
+
+/**
+ * Exowatt: P3's agent tools, mounted on Settings › Sharing & access (Settings › Integrations is gone).
+ * Server-authoritative like agent browser access.
+ */
+export function ExowattAgentToolsSection() {
+  return (
+    <SettingsSection id="agent-tools" title="Agent tools">
+      <AgentP3ToolsSetting />
+      {isElectron ? <CrossEnvironmentAgentToolsSetting /> : null}
+      {isElectron ? <PeerInboundSetting /> : null}
+    </SettingsSection>
   );
 }
 

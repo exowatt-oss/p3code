@@ -2,6 +2,7 @@ import { assert, describe, expect, it } from "vite-plus/test";
 import type { ResolvedKeybindingsConfig } from "@t3tools/contracts";
 import {
   compileResolvedKeybindingsConfig,
+  DEFAULT_RESOLVED_KEYBINDINGS,
   parseKeybindingShortcut,
 } from "@t3tools/shared/keybindings";
 
@@ -9,6 +10,8 @@ import { resolveShortcutCommand } from "../../keybindings";
 
 import {
   buildKeybindingRows,
+  commandLabel,
+  filterKeybindingRows,
   keybindingConflictLabels,
   keybindingFromKeyboardEvent,
   parseWhenExpressionDraft,
@@ -299,5 +302,23 @@ describe("KeybindingsSettings.logic", () => {
     );
 
     expect(rows.map((row) => row.conflicts)).toEqual([[], []]);
+  });
+
+  // exowatt: P3's default shortcuts keep their labels and stay findable; copy-link copies a P3 thread link.
+  it("labels and finds P3's default shortcuts", () => {
+    const rows = buildKeybindingRows(DEFAULT_RESOLVED_KEYBINDINGS);
+    expect(commandLabel("settings.open")).toBe("Settings: Open");
+    expect(commandLabel("thread.copyReference")).toBe("Copy Thread Link");
+    expect(filterKeybindingRows(rows, "settings")).toContainEqual(
+      expect.objectContaining({ command: "settings.open", key: "mod+,", source: "Default" }),
+    );
+    expect(filterKeybindingRows(rows, "hub")).toContainEqual(
+      expect.objectContaining({ command: "rightPanel.hub", key: "mod+alt+h", source: "Default" }),
+    );
+    for (const query of ["th", "thread link", "copy"]) {
+      expect(filterKeybindingRows(rows, query)).toContainEqual(
+        expect.objectContaining({ command: "thread.copyReference", key: "mod+shift+c" }),
+      );
+    }
   });
 });

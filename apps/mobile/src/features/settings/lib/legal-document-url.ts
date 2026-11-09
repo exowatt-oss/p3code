@@ -1,25 +1,23 @@
-const DEFAULT_MARKETING_SITE_URL = "https://t3.codes";
-
-function resolveMarketingSiteUrl(override: string | undefined): URL {
+// A self-hosted source build has no default hosted legal site. A distributor may
+// set EXPO_PUBLIC_MARKETING_SITE_URL when it has published its own policies.
+function resolveMarketingSiteUrl(override: string | undefined): URL | null {
+  if (!override?.trim()) return null;
   try {
-    const url = new URL(override?.trim() || DEFAULT_MARKETING_SITE_URL);
-    if (url.protocol !== "https:" && url.protocol !== "http:") {
-      return new URL(DEFAULT_MARKETING_SITE_URL);
-    }
-
+    const url = new URL(override.trim());
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
     url.search = "";
     url.hash = "";
     url.pathname = `${url.pathname.replace(/\/+$/, "")}/`;
     return url;
   } catch {
-    return new URL(DEFAULT_MARKETING_SITE_URL);
+    return null;
   }
 }
 
 const MARKETING_SITE_URL = resolveMarketingSiteUrl(process.env.EXPO_PUBLIC_MARKETING_SITE_URL);
 
 function marketingSiteDocumentUrl(path: string): string {
-  return new URL(path, MARKETING_SITE_URL).toString();
+  return MARKETING_SITE_URL === null ? "" : new URL(path, MARKETING_SITE_URL).toString();
 }
 
 const PRIVACY_POLICY_URL = marketingSiteDocumentUrl("privacy-policy");
@@ -32,13 +30,12 @@ const ALLOWED_LEGAL_DOCUMENT_URLS = [
   PRIVACY_POLICY_URL,
   TERMS_OF_SERVICE_URL,
   SECURITY_POLICY_URL,
-] as const;
+].filter((url) => url !== "");
 
 function webDocumentIdentity(value: string): string | null {
   try {
     const url = new URL(value);
     if (url.protocol !== "https:" && url.protocol !== "http:") return null;
-
     const pathname = url.pathname.replace(/\/+$/, "") || "/";
     return `${url.origin}${pathname}`;
   } catch {

@@ -9,6 +9,7 @@ import { runSshCommand, baseSshArgs, resolveSshCommand } from "@t3tools/ssh/comm
 import { SshCommandError } from "@t3tools/ssh/errors";
 import * as NetService from "@t3tools/shared/Net";
 import { waitForHttpReady } from "@t3tools/shared/httpReadiness";
+import { SSH_READY_PROBE_TIMEOUT_MS } from "@t3tools/ssh/tunnel";
 import * as Digest from "effect/crypto/Digest";
 import * as Exit from "effect/Exit";
 import * as Effect from "effect/Effect";
@@ -411,6 +412,7 @@ export const make = Effect.fn("SshDeviceHost.make")(function* (
         baseUrl: baseUrl!,
         path: route!,
         timeoutMs: 15000,
+        probeTimeoutMs: SSH_READY_PROBE_TIMEOUT_MS,
         makeError: () =>
           new DeviceHost.DeviceHostError({
             hostId: config.id,

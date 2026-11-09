@@ -162,6 +162,8 @@ export interface EnvironmentThreadShell {
   readonly pendingSubagentRequest?: PendingSubagentRequest | null;
   /** Guest messages waiting for the owner to send or dismiss. */
   readonly pendingGuestMessageCount?: number;
+  /** Latest settled Phi turn requested a passive response, not a runtime input. */
+  readonly hasAwaitingHumanHandback?: boolean;
   readonly hasActionableProposedPlan: boolean;
   readonly pendingBackgroundTasks: ReadonlyArray<
     NonNullable<OrchestrationV2ThreadShell["pendingBackgroundTasks"]>[number]
@@ -225,7 +227,11 @@ function shellRuntime(thread: OrchestrationV2ThreadShell): ThreadRuntimeSummary 
   const parkAtIdle =
     backgroundWorkHoldsCompletion(thread.pendingBackgroundTasks ?? []) &&
     thread.status !== "failed";
-  if (thread.latestRunId === null && thread.activeProviderThreadId === null && !parkAtIdle) {
+  // exowatt: threads imported from v1 keep their provider thread but have no
+  // runs. Without a run or a background roster there is no runtime to show;
+  // reporting `idle` here would paint every imported thread as "Waiting".
+  // (Subsumes upstream's "no run and no provider thread" check.)
+  if (thread.latestRunId === null && !parkAtIdle) {
     return null;
   }
   const status = parkAtIdle ? "idle" : (thread.activityRunStatus ?? thread.status);
@@ -319,6 +325,9 @@ export function presentThreadShell(
         : null,
     pendingSubagentRequest,
     pendingGuestMessageCount: thread.pendingGuestMessageCount ?? 0,
+    hasAwaitingHumanHandback:
+      thread.latestWorkspaceState?.endState === "awaiting-human" &&
+      !threadRunStatusIsActive(thread.activityRunStatus ?? thread.status),
     hasActionableProposedPlan: thread.hasActionableProposedPlan,
     pendingBackgroundTasks: thread.pendingBackgroundTasks ?? [],
     providerInstanceHistory: thread.providerInstanceHistory ?? [],

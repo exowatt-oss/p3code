@@ -15,36 +15,94 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as ElectronUpdater from "../electron/ElectronUpdater.ts";
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
-import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopEnvironment from "../app/DesktopEnvironment.ts";
+import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopState from "../app/DesktopState.ts";
 import * as DesktopUpdatePolicy from "./DesktopUpdatePolicy.ts";
+import * as DesktopUpdateTransport from "./DesktopUpdateTransport.ts";
 import * as DesktopUpdates from "./DesktopUpdates.ts";
+
 import { flushCallbacks, makeHarness } from "./updatesTestHarness.ts";
 
 describe("DesktopUpdates", () => {
-  it.effect("updates Linux .deb installs and leaves other non-AppImage installs off", () =>
-    Effect.gen(function* () {
-      const linuxState = (packageType: string | undefined) =>
-        Effect.scoped(
-          Effect.gen(function* () {
-            const updates = yield* DesktopUpdates.DesktopUpdates;
-            yield* updates.configure;
-            return yield* updates.getState;
-          }),
-        ).pipe(Effect.provide(makeHarness({ platform: "linux", packageType }).layer));
+  it.effect("configures the updater and runs startup checks on the test clock", () => {
+    const harness = makeHarness();
 
-      const deb = yield* linuxState("deb\n");
-      assert.equal(deb.status, "idle");
+    return Effect.gen(function* () {
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const updates = yield* DesktopUpdates.DesktopUpdates;
+          yield* updates.configure;
 
-      const unmarked = yield* linuxState(undefined);
-      assert.equal(unmarked.status, "disabled");
-    }),
-  );
+          const state = yield* updates.getState;
+          assert.equal(state.enabled, true);
+          assert.equal(state.status, "idle");
+          assert.equal(harness.listenerCount(), 7);
+          assert.equal(harness.checkCount(), 0);
+
+          yield* TestClock.adjust(Duration.millis(15_000));
+          assert.equal(harness.checkCount(), 1);
+        }),
+      );
+
+      assert.equal(harness.listenerCount(), 0);
+    }).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  });
+
+  it.effect("keeps P3 force-check enabled while the stock Electron updater is disabled", () => {
+    const harness = makeHarness({
+      env: { T3CODE_DISABLE_AUTO_UPDATE: "true" },
+    });
+
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+
+        const initialState = yield* updates.getState;
+        assert.isTrue(initialState.enabled);
+        assert.notEqual(
+          initialState.message,
+          "Automatic updates are disabled by the T3CODE_DISABLE_AUTO_UPDATE setting.",
+        );
+
+        const clickedResult = yield* updates.check("web-ui");
+        assert.isTrue(clickedResult.checked);
+        assert.equal(harness.checkCount(), 1);
+      }),
+    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  });
+
+  it.effect("uses a distinct P3 emergency kill switch and message", () => {
+    const harness = makeHarness({
+      env: { P3CODE_DISABLE_AUTO_UPDATE: "true" },
+    });
+
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+
+        const state = yield* updates.getState;
+        assert.isFalse(state.enabled);
+        assert.equal(state.status, "disabled");
+        const reason = yield* updates.disabledReason;
+        assert.isTrue(Option.isSome(reason));
+        if (Option.isSome(reason)) {
+          assert.equal(
+            reason.value,
+            "P3 Code updates are disabled by the P3CODE_DISABLE_AUTO_UPDATE emergency setting.",
+          );
+        }
+      }),
+    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  });
 
   it.effect("keeps the disabled reason available after configuration and channel changes", () => {
-    const harness = makeHarness({ env: { T3CODE_DISABLE_AUTO_UPDATE: "true" } });
-    const reason = "Automatic updates are disabled by the T3CODE_DISABLE_AUTO_UPDATE setting.";
+    // exowatt: P3 reads its own kill switch (T3CODE_DISABLE_AUTO_UPDATE only stops the stock updater).
+    const harness = makeHarness({ env: { P3CODE_DISABLE_AUTO_UPDATE: "true" } });
+    const reason =
+      "P3 Code updates are disabled by the P3CODE_DISABLE_AUTO_UPDATE emergency setting.";
 
     return Effect.scoped(
       Effect.gen(function* () {
@@ -63,6 +121,32 @@ describe("DesktopUpdates", () => {
         assert.equal(harness.checkCount(), 0);
       }),
     ).pipe(Effect.provide(harness.layer));
+  });
+
+  it.effect("keeps a failed background stage actionable with its fallback message", () => {
+    const harness = makeHarness();
+
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+
+        harness.emit("update-available", { version: "1.2.4" });
+        yield* flushCallbacks;
+        harness.emit(
+          "update-staging-error",
+          new Error("P3 Code could not download the update. Fallback: download it by hand"),
+        );
+        yield* flushCallbacks;
+
+        const state = yield* updates.getState;
+        assert.equal(state.status, "available");
+        assert.equal(state.availableVersion, "1.2.4");
+        assert.equal(state.errorContext, "download");
+        assert.include(state.message ?? "", "download it by hand");
+        assert.isTrue(state.canRetry);
+      }),
+    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
 
   it.effect("checks for newer releases after an update has been downloaded", () => {
@@ -93,7 +177,6 @@ describe("DesktopUpdates", () => {
         assert.deepEqual(unchangedState.releaseNotes, [
           { version: "1.2.4", items: ["fix: queued update"], totalItems: 1 },
         ]);
-        assert.equal(unchangedState.omittedReleaseCount, 0);
 
         const nextResult = yield* updates.check("poll");
         assert.isTrue(nextResult.checked);
@@ -136,7 +219,6 @@ describe("DesktopUpdates", () => {
         assert.deepEqual(state.releaseNotes, [
           { version: "1.2.4", items: ["fix: queued update"], totalItems: 1 },
         ]);
-        assert.equal(state.omittedReleaseCount, 0);
         assert.equal(state.downloadPercent, 100);
       }),
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
@@ -240,15 +322,14 @@ describe("DesktopUpdates", () => {
       new Error("request failed for https://user:secret@example.com/update?token=secret"),
       { code: "ERR_UPDATER_LATEST_VERSION_NOT_FOUND" },
     );
-    const updaterError = new ElectronUpdater.ElectronUpdaterCheckForUpdatesError({
-      channel: null,
+    const updaterError = new DesktopUpdateTransport.DesktopUpdateTransportCheckError({
       cause,
     });
     const harness = makeHarness({ checkForUpdates: Effect.fail(updaterError) });
     const loggedAnnotations: Array<Record<string, unknown>> = [];
     const logger = Logger.make(({ fiber }) => {
       const annotations = fiber.getRef(References.CurrentLogAnnotations);
-      if (annotations.errorTag === "ElectronUpdaterCheckForUpdatesError") {
+      if (annotations.errorTag === "DesktopUpdateTransportCheckError") {
         loggedAnnotations.push(annotations);
       }
     });
@@ -263,18 +344,14 @@ describe("DesktopUpdates", () => {
         const state = yield* updates.getState;
         const loggedAnnotation = loggedAnnotations.at(-1);
         assert.isDefined(loggedAnnotation);
-        assert.equal(loggedAnnotation.errorTag, "ElectronUpdaterCheckForUpdatesError");
-        assert.isNull(loggedAnnotation.channel);
-        assert.equal(
-          loggedAnnotation.cause,
+        assert.equal(loggedAnnotation.errorTag, "DesktopUpdateTransportCheckError");
+        assert.include(
+          String(loggedAnnotation.cause),
           "Error [ERR_UPDATER_LATEST_VERSION_NOT_FOUND]: request failed for [redacted URL]",
         );
         assert.notProperty(loggedAnnotation, "error");
         assert.notInclude(Object.values(loggedAnnotation).map(String).join(" "), "secret");
-        assert.equal(
-          state.message,
-          "Electron updater failed to check for updates on channel default.",
-        );
+        assert.equal(state.message, "P3 Code could not check for updates.");
         assert.notInclude(state.message ?? "", "secret");
       }),
     ).pipe(
@@ -288,14 +365,35 @@ describe("DesktopUpdates", () => {
     );
   });
 
+  it.effect("surfaces a failed detached install on the next launch", () => {
+    const harness = makeHarness({
+      previousInstallFailure:
+        "The installer could not upgrade P3 Code. The previous app is still installed.",
+    });
+
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+
+        const state = yield* updates.getState;
+        assert.equal(state.status, "error");
+        assert.equal(state.errorContext, "install");
+        assert.equal(
+          state.message,
+          "The installer could not upgrade P3 Code. The previous app is still installed.",
+        );
+        assert.isTrue(state.canRetry);
+      }),
+    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  });
+
   it.effect("recovers download state after an unexpected setup failure", () => {
     let disableDifferentialCalls = 0;
     const harness = makeHarness({
-      setDisableDifferentialDownload: Effect.suspend(() => {
+      downloadUpdate: Effect.suspend(() => {
         disableDifferentialCalls += 1;
-        return disableDifferentialCalls === 1
-          ? Effect.void
-          : Effect.die(new Error("download setup failed"));
+        return Effect.die(new Error("download setup failed"));
       }),
     });
 
@@ -326,12 +424,9 @@ describe("DesktopUpdates", () => {
       const actionStarted = yield* Deferred.make<void>();
       let disableDifferentialCalls = 0;
       const harness = makeHarness({
-        setDisableDifferentialDownload: Effect.suspend(() => {
+        downloadUpdate: Effect.suspend(() => {
           disableDifferentialCalls += 1;
           if (disableDifferentialCalls === 1) {
-            return Effect.void;
-          }
-          if (disableDifferentialCalls === 2) {
             return Deferred.succeed(actionStarted, undefined).pipe(Effect.andThen(Effect.never));
           }
           return Effect.void;
@@ -716,25 +811,6 @@ describe("DesktopUpdates", () => {
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
 
-  it.effect("offers older releases only to checks that leave the running build's track", () => {
-    const harness = makeHarness({ beforeSetUpdateChannel: Effect.void });
-
-    return Effect.scoped(
-      Effect.gen(function* () {
-        const updates = yield* DesktopUpdates.DesktopUpdates;
-        yield* updates.configure;
-        const before = harness.checkAllowedDowngrade.length;
-        yield* updates.setChannel("nightly");
-        yield* updates.setChannel("latest");
-        yield* updates.check("remote-update", { allowDowngrade: true });
-
-        // Back on its own Stable track the build never needs an older release.
-        assert.deepEqual(harness.checkAllowedDowngrade.slice(before), [true, false, true]);
-        assert.isFalse(harness.allowDowngrade());
-      }),
-    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
-  });
-
   it.effect("re-checks a saved track that differs from the running build's track", () => {
     const harness = makeHarness({
       appVersion: "1.2.4-nightly.20261027.1",
@@ -811,46 +887,11 @@ describe("DesktopUpdates", () => {
         yield* updates.check("startup");
 
         assert.equal((yield* updates.getState).channel, "latest");
-        assert.deepEqual(harness.checkAllowedDowngrade, [false]);
         // Semver ranks Stable 1.2.4 above this Nightly, but a Nightly built before the release's
         // version bump can hold migrations 1.2.4 lacks. Crossing needs a guarded switch.
         harness.emit("update-available", { version: "1.2.4" });
         yield* flushCallbacks;
         assert.isNull((yield* updates.getState).availableVersion);
-      }),
-    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
-  });
-
-  it.effect("keeps a saved Nightly track across a restart without crossing on its own", () => {
-    // A Stable build whose switch to Nightly was refused before the app quit; its floor is gone.
-    const harness = makeHarness({ savedChannel: "nightly" });
-
-    return Effect.scoped(
-      Effect.gen(function* () {
-        const updates = yield* DesktopUpdates.DesktopUpdates;
-        yield* updates.configure;
-        yield* updates.check("startup");
-        harness.emit("update-available", { version: "1.2.4-nightly.20261027.1" });
-        yield* flushCallbacks;
-
-        assert.equal((yield* updates.getState).channel, "nightly");
-        assert.isNull((yield* updates.getState).availableVersion);
-        assert.deepEqual(harness.checkAllowedDowngrade, [false]);
-      }),
-    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
-  });
-
-  it.effect("never offers an older Nightly to a Nightly build's own checks", () => {
-    const harness = makeHarness({ appVersion: "1.2.4-nightly.20261027.1" });
-
-    return Effect.scoped(
-      Effect.gen(function* () {
-        const updates = yield* DesktopUpdates.DesktopUpdates;
-        yield* updates.configure;
-        yield* updates.check("poll");
-
-        assert.equal((yield* updates.getState).channel, "nightly");
-        assert.deepEqual(harness.checkAllowedDowngrade, [false]);
       }),
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
@@ -915,6 +956,37 @@ describe("DesktopUpdates", () => {
       ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
     }),
   );
+
+  it.effect("preserves settings failure context when an update channel cannot be persisted", () => {
+    const diskFailure = new Error("disk exploded");
+    const settingsFailure = new DesktopAppSettings.DesktopSettingsWriteError({
+      operation: "replace-settings-file",
+      path: "/tmp/settings.json",
+      cause: diskFailure,
+    });
+    const harness = makeHarness({ setUpdateChannelError: settingsFailure });
+
+    return Effect.scoped(
+      Effect.gen(function* () {
+        const updates = yield* DesktopUpdates.DesktopUpdates;
+        yield* updates.configure;
+
+        const error = yield* updates.setChannel("nightly").pipe(Effect.flip);
+
+        assert.instanceOf(error, DesktopUpdates.DesktopUpdateChannelPersistenceError);
+        assert.isTrue(DesktopUpdates.isDesktopUpdateSetChannelError(error));
+        assert.equal(error.channel, "nightly");
+        assert.strictEqual(error.cause, settingsFailure);
+        assert.strictEqual(error.cause.cause, diskFailure);
+        assert.equal(error.message, "Failed to persist the nightly desktop update channel.");
+        assert.notInclude(error.message, diskFailure.message);
+
+        const checkResult = yield* updates.check("manual");
+        assert.isTrue(checkResult.checked);
+        assert.equal(harness.checkCount(), 1);
+      }),
+    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
+  });
 });
 
 describe("describeUpdateErrorCause", () => {
@@ -995,10 +1067,9 @@ describe("DesktopUpdates under a managed policy", () => {
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
 
-  it.effect("updates from the administrator's feed", () => {
+  // exowatt: P3 installs through its own transport, so an electron-updater mirror cannot apply.
+  it.effect("keeps P3's transport when an administrator sets a feed", () => {
     const harness = makeHarness({
-      // Any user can set the mock flag; it must not redirect a managed feed.
-      env: { T3CODE_DESKTOP_MOCK_UPDATES: "true" },
       policy: managed({ feedUrl: "https://updates.example.com/t3code" }),
     });
 
@@ -1007,9 +1078,8 @@ describe("DesktopUpdates under a managed policy", () => {
         const updates = yield* DesktopUpdates.DesktopUpdates;
         yield* updates.configure;
         assert.equal((yield* updates.getState).status, "idle");
-        assert.deepEqual(harness.feedUrls(), [
-          { provider: "generic", url: "https://updates.example.com/t3code" },
-        ]);
+        assert.deepEqual(harness.feedUrls(), []);
+        assert.isTrue((yield* updates.check("menu")).checked);
       }),
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });
@@ -1031,7 +1101,7 @@ describe("DesktopUpdates under a managed policy", () => {
   it.effect("does not report the channel as the only block when updates are off anyway", () => {
     const harness = makeHarness({
       appVersion: "1.2.3-nightly.20261028.1",
-      env: { T3CODE_DISABLE_AUTO_UPDATE: "true" },
+      env: { P3CODE_DISABLE_AUTO_UPDATE: "true" },
       policy: managed({ allowNightly: false, feedUrl: "https://updates.example.com/t3code" }),
     });
 
@@ -1042,36 +1112,6 @@ describe("DesktopUpdates under a managed policy", () => {
         const state = yield* updates.getState;
         assert.isFalse(state.enabled);
         assert.isUndefined(state.channelBlockedByPolicy);
-      }),
-    ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
-  });
-
-  it.effect("holds a nightly install until its user switches to stable", () => {
-    const harness = makeHarness({
-      appVersion: "1.2.3-nightly.20261028.1",
-      // A managed app ignores the mock feed, so give it a real one.
-      policy: managed({ allowNightly: false, feedUrl: "https://updates.example.com/t3code" }),
-    });
-
-    return Effect.scoped(
-      Effect.gen(function* () {
-        const updates = yield* DesktopUpdates.DesktopUpdates;
-        yield* updates.configure;
-        yield* TestClock.adjust("10 minutes");
-
-        const held = yield* updates.getState;
-        assert.equal(held.channel, "nightly");
-        assert.equal(held.status, "disabled");
-        assert.include(held.message ?? "", message);
-        assert.isTrue(held.channelBlockedByPolicy);
-        assert.isFalse((yield* updates.check("menu")).checked);
-        assert.equal(harness.checkCount(), 0);
-
-        const stable = yield* updates.setChannel("latest");
-        assert.equal(stable.channel, "latest");
-        assert.isTrue(stable.enabled);
-        assert.isUndefined(stable.channelBlockedByPolicy);
-        assert.equal(harness.checkCount(), 1);
       }),
     ).pipe(Effect.provide(Layer.merge(TestClock.layer(), harness.layer)));
   });

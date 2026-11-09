@@ -554,6 +554,7 @@ function itemIcon(item: OrchestrationV2TurnItem): ThreadFeedActivity["icon"] {
     case "checkpoint":
     case "proposed_plan":
     case "todo_list":
+    case "workspace_state":
       return "check";
     case "compaction":
     case "handoff":
@@ -584,6 +585,9 @@ function itemSummary(
   if (item.type === "notification") return item.summary;
   if (item.type === "system_notice") return item.message;
   if (item.type === "compaction") return contextCompactionLabel(item);
+  if (item.type === "workspace_state") {
+    return `Session state: ${item.payload.endState.replaceAll("-", " ")}`;
+  }
   const title =
     (item.type === "dynamic_tool"
       ? dynamicToolTitle(item.toolName, item.input, item.title)
@@ -652,6 +656,8 @@ function itemSummary(
 
 function itemPreview(item: OrchestrationV2TurnItem): string | null {
   switch (item.type) {
+    case "workspace_state":
+      return item.payload.question ?? item.payload.openItems[0] ?? item.payload.feadsEpic ?? null;
     case "reasoning":
       return item.text || null;
     case "command_execution":
@@ -2239,6 +2245,12 @@ export function buildThreadFeed(
       item.type === "user_message" &&
       item.inputIntent === "queued_turn" &&
       item.status === "pending"
+    )
+      continue;
+    if (
+      item.type === "workspace_state" &&
+      item.payload.openItems.length === 0 &&
+      !item.payload.feadsEpic
     )
       continue;
     if (item.type === "user_message" && foldedAnswerMessageIds.has(item.messageId)) continue;

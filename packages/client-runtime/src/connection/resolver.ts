@@ -259,6 +259,9 @@ const makeSshBroker = Effect.fn("clientRuntime.connection.broker.makeSsh")(funct
     return {
       ...authorized,
       target,
+      ...(prepared.bootstrap.reverseHttpBaseUrl === undefined
+        ? {}
+        : { reverseHttpBaseUrl: prepared.bootstrap.reverseHttpBaseUrl }),
     } satisfies PreparedConnection;
   });
 });

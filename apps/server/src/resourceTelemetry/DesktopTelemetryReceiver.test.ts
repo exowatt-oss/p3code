@@ -78,7 +78,7 @@ NodeAssert.deepEqual(fingerprints(NodeTls.getCACertificates("default")), expecte
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("updates live TLS trust when shell certificates arrive after startup", () =>
+  it.effect.skipIf(Number(process.versions.node.split(".")[0]) < 26)("updates live TLS trust when shell certificates arrive after startup", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;

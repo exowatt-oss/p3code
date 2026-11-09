@@ -1,4 +1,5 @@
 import { AuthPreviewOperateScope, type EnvironmentId } from "@t3tools/contracts";
+import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 import type { AnyRouter } from "@tanstack/react-router";
 
 import { stackedThreadToast, toastManager } from "~/components/ui/toast";
@@ -9,6 +10,7 @@ import { dispatchPreviewAction, type PreviewAction } from "../components/preview
 import { isAppModalPage } from "../components/sidebar/mainAppLocation";
 import { shouldCreateNewThreadInCurrentProject } from "../components/Sidebar.logic";
 import { createNewThreadHandler, resolveDefaultProjectRef } from "../hooks/useHandleNewThread";
+import { restartThreadSession } from "../hooks/useRestartThreadSession";
 import { createScratchProjectActions } from "../hooks/useScratchProject";
 import { getClientSettings } from "../hooks/useSettings";
 import { startNewThreadFromContext } from "../lib/chatThreadActions";
@@ -17,6 +19,7 @@ import { selectActiveRightPanel, useRightPanelStore } from "../rightPanelStore";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { buildSidebarProjectSnapshots } from "../sidebarProjectGrouping";
 import { readProjects, readThreadShell } from "../state/entities";
+import { threadEnvironment } from "../state/threads";
 import { environmentPresentations } from "../state/presentation";
 import { primaryEnvironmentIdAtom } from "../state/primaryEnvironment";
 import { readEnvironmentScope } from "../state/session";
@@ -150,12 +153,23 @@ export function installChatRouteCommands(router: AnyRouter): () => void {
             stackedThreadToast({
               type: "info",
               title: "Preview is desktop-only",
-              description: "Open T3 Code in the desktop app to use the in-app preview.",
+              description: "Open P3 Code in the desktop app to use the in-app preview.",
             }),
           );
           return;
         }
         dispatchPreviewAction("toggle-panel");
+      },
+      // exowatt: stops the open thread's provider session so the next message starts fresh.
+      "thread.restartSession": (event) => {
+        claim(event);
+        const threadRef = readRouteThreadRef();
+        if (event.repeat || !threadRef || !readThreadShell(threadRef)) return;
+        void restartThreadSession(threadRef, (input) =>
+          runAtomCommand(appAtomRegistry, threadEnvironment.stopSession, input, {
+            reportFailure: false,
+          }),
+        );
       },
       "preview.refresh": previewCommand("refresh"),
       "preview.focusUrl": previewCommand("focus-url"),

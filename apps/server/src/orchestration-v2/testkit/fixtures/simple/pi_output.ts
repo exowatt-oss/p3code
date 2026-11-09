@@ -24,34 +24,77 @@ function lastPiResponseData(transcript: ProviderReplayTranscript, command: strin
   return field(frame, "data");
 }
 
-/** Settled Pi usage uses each recorded get_session_stats response in order, not the last streaming total. */
+function count(value: unknown, key: string): number {
+  const raw = field(value, key);
+  return typeof raw === "number" ? raw : 0;
+}
+
+/**
+ * exowatt: a settled turn's usage is its last assistant `message_end` usage (input includes cache
+ * reads and writes); `get_session_stats` only supplies the window, falling back for turns without
+ * message usage. The turn's own tokens sum every assistant message.
+ */
 export function assertPiSettledTokenUsage(
   result: OrchestratorV2ScenarioResult,
   transcript: ProviderReplayTranscript,
 ) {
-  const stats = transcript.entries.flatMap((entry) =>
-    entry.type === "emit_inbound" &&
-    field(entry.frame, "type") === "response" &&
-    field(entry.frame, "command") === "get_session_stats"
-      ? [field(entry.frame, "data")]
-      : [],
-  );
+  const segments: Array<{ stats: unknown; usages: Array<unknown> }> = [];
+  let usages: Array<unknown> = [];
+  for (const entry of transcript.entries) {
+    if (entry.type !== "emit_inbound") continue;
+    const frame = entry.frame;
+    if (
+      field(frame, "type") === "message_end" &&
+      field(field(frame, "message"), "role") === "assistant" &&
+      count(field(field(frame, "message"), "usage"), "totalTokens") > 0
+    ) {
+      usages.push(field(field(frame, "message"), "usage"));
+    }
+    if (field(frame, "type") === "response" && field(frame, "command") === "get_session_stats") {
+      segments.push({ stats: field(frame, "data"), usages });
+      usages = [];
+    }
+  }
   const turns = projectionFor(result, transcript.scenario).providerTurns;
-  assert.lengthOf(turns, stats.length);
+  assert.lengthOf(turns, segments.length);
   for (const [index, turn] of turns.entries()) {
-    const contextUsage = field(stats[index], "contextUsage");
-    const tokens = field(stats[index], "tokens");
+    const { stats, usages: turnUsages } = segments[index]!;
+    const contextUsage = field(stats, "contextUsage");
+    const last = turnUsages.at(-1);
+    assert.isDefined(last, "each recorded Pi turn must report message usage");
+    const input = (usage: unknown) =>
+      count(usage, "input") + count(usage, "cacheRead") + count(usage, "cacheWrite");
     const { updatedAt: _updatedAt, ...tokenUsage } = turn.tokenUsage ?? { updatedAt: "" };
     assert.deepEqual(tokenUsage, {
-      usedTokens: field(contextUsage, "tokens"),
+      usedTokens: count(last, "totalTokens"),
       maxTokens: field(contextUsage, "contextWindow"),
-      inputTokens: field(tokens, "input"),
-      cachedInputTokens: field(tokens, "cacheRead"),
-      outputTokens: field(tokens, "output"),
+      inputTokens: input(last),
+      cachedInputTokens: count(last, "cacheRead"),
+      outputTokens: count(last, "output"),
+      ...(field(last, "reasoning") === undefined
+        ? {}
+        : { reasoningOutputTokens: count(last, "reasoning") }),
+      costUsd: field(stats, "cost"),
+    });
+    const sum = (read: (usage: unknown) => number) =>
+      turnUsages.reduce<number>((total, usage) => total + read(usage), 0);
+    assert.deepInclude(turn.turnTokenUsage, {
+      usageScope: "main_agent",
+      usageStatus: "complete",
+      inputTokens: sum(input),
+      cachedInputTokens: sum((usage) => count(usage, "cacheRead")),
+      cacheCreationTokens: sum((usage) => count(usage, "cacheWrite")),
+      outputTokens: sum((usage) => count(usage, "output")),
     });
   }
 }
 
+/**
+ * Pi-specific additions to the shared simple contract: the streamed thinking
+ * block becomes a reasoning item, the settled turn carries its last message's
+ * real context usage, and the turn's native ref is the session-tree id
+ * of its user message (the point rollback and fork re-root at).
+ */
 export function assertPiSimpleOutput(
   result: OrchestratorV2ScenarioResult,
   transcript: ProviderReplayTranscript,

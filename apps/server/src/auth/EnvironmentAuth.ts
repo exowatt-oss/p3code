@@ -21,6 +21,7 @@ import {
   type AuthWebSocketTicketUse,
   DpopFailureReason,
   type DpopFailureReason as DpopFailureReasonType,
+  isExowattPeerSessionLabel,
   mcpClientScopes,
 } from "@t3tools/contracts";
 import { isLocalLoopbackHost } from "@t3tools/shared/hostClassification";
@@ -92,6 +93,8 @@ export interface AuthenticatedSession {
   readonly scopes: ReadonlyArray<AuthEnvironmentScope>;
   readonly proofKeyThumbprint?: string;
   readonly expiresAt?: DateTime.DateTime;
+  /** exowatt: the client label fixed at issue (`p3-peer:` marks a linked-environment session). */
+  readonly clientLabel?: string;
 }
 
 const serverAuthInternalErrorContext = {
@@ -450,6 +453,17 @@ export class ServerAuthForbiddenOperationError extends Schema.TaggedError<Server
   }
 }
 
+/** exowatt: a linked environment's session (`p3-peer:` label) presented anywhere but `/mcp`. */
+export class ServerAuthPeerSessionMcpOnlyError extends Schema.TaggedError<ServerAuthPeerSessionMcpOnlyError>()(
+  "ServerAuthPeerSessionMcpOnlyError",
+  {},
+) {
+  override get message(): string {
+    return "A linked environment's session is only accepted by the MCP endpoint.";
+  }
+}
+export const isServerAuthPeerSessionMcpOnlyError = Schema.is(ServerAuthPeerSessionMcpOnlyError);
+
 export class EnvironmentAuth extends Context.Service<
   EnvironmentAuth,
   {
@@ -529,13 +543,24 @@ export class EnvironmentAuth extends Context.Service<
     readonly revokeOtherClientSessions: (
       currentSessionId: AuthSessionId,
     ) => Effect.Effect<number, ServerAuthInternalError>;
+    /** Refuses linked-environment sessions, which only `/mcp` accepts. */
     readonly authenticateHttpRequest: (
+      request: HttpServerRequest.HttpServerRequest,
+    ) => Effect.Effect<
+      AuthenticatedSession,
+      ServerAuthCredentialError | ServerAuthPeerSessionMcpOnlyError | ServerAuthInternalError
+    >;
+    /** exowatt: `/mcp` only. Also accepts linked-environment sessions; MCP narrows their tools. */
+    readonly authenticateMcpHttpRequest: (
       request: HttpServerRequest.HttpServerRequest,
     ) => Effect.Effect<AuthenticatedSession, ServerAuthCredentialError | ServerAuthInternalError>;
     readonly authenticateWebSocketUpgrade: (
       request: HttpServerRequest.HttpServerRequest,
       use: AuthWebSocketTicketUse,
-    ) => Effect.Effect<AuthenticatedSession, ServerAuthCredentialError | ServerAuthInternalError>;
+    ) => Effect.Effect<
+      AuthenticatedSession,
+      ServerAuthCredentialError | ServerAuthPeerSessionMcpOnlyError | ServerAuthInternalError
+    >;
     readonly issueWebSocketTicket: (
       session: Pick<AuthenticatedSession, "sessionId" | "proofKeyThumbprint">,
       input?: { readonly use?: AuthWebSocketTicketUse },
@@ -616,6 +641,17 @@ const rejectMcpClientAudience = <S extends { readonly subject: string }>(session
           diagnostic: "MCP client sessions are only accepted by the MCP endpoint.",
         }),
       ).pipe(Effect.tap(() => Effect.logWarning("Rejected an MCP client session outside /mcp.")))
+    : Effect.succeed(session);
+
+const rejectPeerSessionOutsideMcp = <S extends { readonly clientLabel?: string | undefined }>(
+  session: S,
+) =>
+  isExowattPeerSessionLabel(session.clientLabel)
+    ? Effect.fail(new ServerAuthPeerSessionMcpOnlyError({})).pipe(
+        Effect.tap(() =>
+          Effect.logWarning("Rejected a linked environment's session outside /mcp."),
+        ),
+      )
     : Effect.succeed(session);
 
 const mapSessionVerificationErrors = <A, R>(
@@ -745,6 +781,7 @@ export const make = Effect.gen(function* () {
         scopes: session.scopes,
         ...(session.proofKeyThumbprint ? { proofKeyThumbprint: session.proofKeyThumbprint } : {}),
         ...(session.expiresAt ? { expiresAt: session.expiresAt } : {}),
+        ...(session.client.label ? { clientLabel: session.client.label } : {}),
       })),
     );
 
@@ -823,8 +860,11 @@ export const make = Effect.gen(function* () {
     );
   };
 
+  const authenticateNonPeerRequest = (request: HttpServerRequest.HttpServerRequest) =>
+    authenticateRequest(request).pipe(Effect.flatMap(rejectPeerSessionOutsideMcp));
+
   const getSessionState: EnvironmentAuth["Service"]["getSessionState"] = (request) =>
-    authenticateRequest(request).pipe(
+    authenticateNonPeerRequest(request).pipe(
       Effect.map(
         (session) =>
           ({
@@ -835,11 +875,13 @@ export const make = Effect.gen(function* () {
             ...(session.expiresAt ? { expiresAt: DateTime.toUtc(session.expiresAt) } : {}),
           }) satisfies AuthSessionState,
       ),
-      Effect.catchIf(isServerAuthCredentialError, () =>
-        Effect.succeed({
-          authenticated: false,
-          auth: descriptor,
-        } satisfies AuthSessionState),
+      Effect.catchIf(
+        (error) => isServerAuthCredentialError(error) || isServerAuthPeerSessionMcpOnlyError(error),
+        () =>
+          Effect.succeed({
+            authenticated: false,
+            auth: descriptor,
+          } satisfies AuthSessionState),
       ),
       Effect.withSpan("EnvironmentAuth.getSessionState"),
     );
@@ -1239,7 +1281,16 @@ export const make = Effect.gen(function* () {
   const authenticateHttpRequest: EnvironmentAuth["Service"]["authenticateHttpRequest"] = (
     request,
   ) =>
-    authenticateRequest(request).pipe(Effect.withSpan("EnvironmentAuth.authenticateHttpRequest"));
+    authenticateNonPeerRequest(request).pipe(
+      Effect.withSpan("EnvironmentAuth.authenticateHttpRequest"),
+    );
+
+  const authenticateMcpHttpRequest: EnvironmentAuth["Service"]["authenticateMcpHttpRequest"] = (
+    request,
+  ) =>
+    authenticateRequest(request).pipe(
+      Effect.withSpan("EnvironmentAuth.authenticateMcpHttpRequest"),
+    );
 
   const authenticateWebSocketUpgrade: EnvironmentAuth["Service"]["authenticateWebSocketUpgrade"] =
     Effect.fn("EnvironmentAuth.authenticateWebSocketUpgrade")(function* (request, use) {
@@ -1253,6 +1304,7 @@ export const make = Effect.gen(function* () {
           const session = yield* sessions
             .verifyWebSocketToken(websocketTicket)
             .pipe(mapSessionVerificationErrors, Effect.flatMap(rejectMcpClientAudience));
+          yield* rejectPeerSessionOutsideMcp({ clientLabel: session.client.label });
           if (session.audience !== undefined && session.audience !== use) {
             return yield* new ServerAuthInvalidCredentialError({
               diagnostic: `WebSocket ticket was issued for the ${session.audience} route.`,
@@ -1292,7 +1344,7 @@ export const make = Effect.gen(function* () {
         }
       }
 
-      return yield* authenticateRequest(request);
+      return yield* authenticateNonPeerRequest(request);
     });
 
   const authenticateMcpClient: EnvironmentAuth["Service"]["authenticateMcpClient"] = (request) => {
@@ -1400,6 +1452,7 @@ export const make = Effect.gen(function* () {
     revokeClientSession,
     revokeOtherClientSessions,
     authenticateHttpRequest,
+    authenticateMcpHttpRequest,
     authenticateWebSocketUpgrade,
     issueWebSocketTicket,
     issueStartupPairingUrl,

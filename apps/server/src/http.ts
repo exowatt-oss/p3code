@@ -42,6 +42,7 @@ import * as EnvironmentAuth from "./auth/EnvironmentAuth.ts";
 import { traceRelayRequest } from "./cloud/traceRelayRequest.ts";
 import {
   annotateEnvironmentRequest,
+  failEnvironmentPeerSessionMcpOnly,
   failEnvironmentScopeRequired,
   failEnvironmentAuthInvalid,
   failEnvironmentInternal,
@@ -302,6 +303,10 @@ const authenticateRawRouteWithScope =
           EnvironmentAuth.serverAuthDpopFailureReason(error),
         ),
       ),
+      Effect.catchIf(
+        EnvironmentAuth.isServerAuthPeerSessionMcpOnlyError,
+        failEnvironmentPeerSessionMcpOnly,
+      ),
       Effect.catchIf(EnvironmentAuth.isServerAuthInternalError, (error) =>
         failEnvironmentInternal("internal_error", error),
       ),
@@ -380,6 +385,7 @@ export const layerOtlpTracesProxyRoute = HttpRouter.add(
     Effect.catchTags({
       EnvironmentAuthInvalidError: HttpServerRespondable.toResponse,
       EnvironmentInternalError: HttpServerRespondable.toResponse,
+      EnvironmentOperationForbiddenError: HttpServerRespondable.toResponse,
       EnvironmentScopeRequiredError: HttpServerRespondable.toResponse,
     }),
     Effect.withTracerEnabled(false),

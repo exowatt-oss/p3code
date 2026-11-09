@@ -93,6 +93,8 @@ export function makeAssistantStreamingFilter(mode: ResponseStreamingMode) {
       delivered.delete(key);
       return event;
     }
+    // exowatt: P3 keeps token delivery (its default): stream every delta unbuffered.
+    if (mode === "token") return event;
     if (mode === "turn") return null;
     const previous = delivered.get(key);
     if (previous && now - previous.at < 400) return null;

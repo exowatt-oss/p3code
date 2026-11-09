@@ -1,8 +1,5 @@
 # Security policy
 
-Report security vulnerabilities affecting T3 Code or T3 Tools-operated infrastructure to
-[security@t3.codes](mailto:security@t3.codes). Please do not disclose them publicly until we have had
-a reasonable opportunity to investigate and remediate them.
+Please report vulnerabilities affecting this P3 Code fork through [GitHub private vulnerability reporting](https://github.com/exowatt-oss/p3code/security/advisories/new). If that is unavailable, email [software@exowatt.com](mailto:software@exowatt.com).
 
-See the [full security policy](https://t3.codes/security-policy) for reporting details, scope,
-and safe harbor terms for good-faith research.
+Do not disclose vulnerabilities publicly before maintainers have had a reasonable opportunity to investigate and remediate them. Vulnerabilities in the upstream T3 Code project should be reported separately to its maintainers.

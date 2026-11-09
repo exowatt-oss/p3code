@@ -19,6 +19,7 @@ import {
 import * as SshTunnel from "@t3tools/ssh/tunnel";
 import * as Context from "effect/Context";
 import type * as Digest from "effect/crypto/Digest";
+import type * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -32,6 +33,7 @@ import * as DesktopSshPasswordPrompts from "./DesktopSshPasswordPrompts.ts";
 export type DesktopSshEnvironmentRuntimeServices =
   | ChildProcessSpawner.ChildProcessSpawner
   | Digest.Digest
+  | SecureRandom.SecureRandom // exowatt: reverse-forward socket nonce (tunnel.ts)
   | FileSystem.FileSystem
   | Path.Path
   | HttpClient.HttpClient
@@ -59,16 +61,25 @@ export class DesktopSshEnvironment extends Context.Service<
     ) => Effect.Effect<DesktopSshEnvironmentTarget, SshCommandError | SshInvalidTargetError>;
     readonly ensureEnvironment: (
       target: DesktopSshEnvironmentTarget,
-      options?: { readonly issuePairingToken?: boolean },
+      options?: SshTunnel.SshEnvironmentEnsureOptions,
     ) => Effect.Effect<DesktopSshEnvironmentBootstrap, DesktopSshEnvironmentOperationError>;
     readonly disconnectEnvironment: (
       target: DesktopSshEnvironmentTarget,
     ) => Effect.Effect<void, DesktopSshEnvironmentOperationError>;
+    // Exowatt: one-off authenticated remote operation (see SshEnvironmentManagerShape).
+    readonly runRemoteOperation: <T>(
+      target: DesktopSshEnvironmentTarget,
+      operation: SshTunnel.SshRemoteOperation<T>,
+    ) => Effect.Effect<T, DesktopSshEnvironmentOperationError>;
   }
 >()("@t3tools/desktop/ssh/DesktopSshEnvironment") {}
 
 export interface DesktopSshEnvironmentLayerOptions {
   readonly resolveCliRunner?: Effect.Effect<SshTunnel.RemoteT3RunnerOptions>;
+  // Exowatt: prepares the remote (P3 server install + phi check) before launch.
+  readonly prepareRemoteRunner?: SshTunnel.SshPrepareRemoteRunner;
+  // Exowatt: local server each tunnel forwards back to (reverse peer links).
+  readonly reverseForward?: Effect.Effect<SshTunnel.ExowattReverseForwardTarget | null>;
 }
 
 function discoverDesktopSshHostsEffect(input?: { readonly homeDir?: string }) {
@@ -100,7 +111,7 @@ function toSshPasswordPromptError(
       break;
     case "DesktopSshPromptWindowUnavailableError":
     case "DesktopSshPromptPresentationError":
-      message = "T3 Code window is not available for SSH authentication.";
+      message = "P3 Code window is not available for SSH authentication.";
       break;
     case "DesktopSshPromptTimedOutError":
       message = `SSH authentication timed out for ${cause.destination}.`;
@@ -156,16 +167,30 @@ export const make = Effect.gen(function* () {
       Effect.provideService(SshAuth.SshPasswordPrompt, passwordPrompt),
       Effect.provide(runtimeContext),
     ),
+    runRemoteOperation: Effect.fn("desktop.ssh.runRemoteOperation")(
+      function* <T>(
+        target: DesktopSshEnvironmentTarget,
+        operation: SshTunnel.SshRemoteOperation<T>,
+      ) {
+        return yield* manager.runRemoteOperation(target, operation);
+      },
+      Effect.provideService(SshAuth.SshPasswordPrompt, passwordPrompt),
+      Effect.provide(runtimeContext),
+    ),
   });
 });
 
 export const layer = (options: DesktopSshEnvironmentLayerOptions = {}) =>
   Layer.effect(DesktopSshEnvironment, make).pipe(
     Layer.provide(
-      SshTunnel.SshEnvironmentManager.layer(
-        options.resolveCliRunner === undefined
+      SshTunnel.SshEnvironmentManager.layer({
+        ...(options.resolveCliRunner === undefined
           ? {}
-          : { resolveCliRunner: options.resolveCliRunner },
-      ),
+          : { resolveCliRunner: options.resolveCliRunner }),
+        ...(options.prepareRemoteRunner === undefined
+          ? {}
+          : { prepareRemoteRunner: options.prepareRemoteRunner }),
+        ...(options.reverseForward === undefined ? {} : { reverseForward: options.reverseForward }),
+      }),
     ),
   );

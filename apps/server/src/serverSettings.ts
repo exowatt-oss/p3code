@@ -38,7 +38,6 @@ import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import * as SchemaTransformation from "effect/SchemaTransformation";
 import * as Semaphore from "effect/Semaphore";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -349,23 +348,13 @@ export const layerTest = (
   managedPolicy?: ManagedPolicySummary,
 ) => Layer.effect(ServerSettingsService, makeTest(overrides, managedPolicy));
 
-// Accept retired token delivery only on load so one old value cannot reset all settings.
-const PersistedResponseStreamingMode = Schema.Union([
-  ResponseStreamingMode,
-  Schema.Literal("token"),
-]).pipe(
-  Schema.decodeTo(
-    ResponseStreamingMode,
-    SchemaTransformation.transform({
-      decode: (mode) => (mode === "token" ? "paragraph" : mode),
-      encode: (mode) => mode,
-    }),
-  ),
-);
+// exowatt: upstream retired "token" delivery and migrates it to "paragraph";
+// P3 keeps "token" as a live mode (and its default), so saved values pass through.
+const PersistedResponseStreamingMode = ResponseStreamingMode;
 const PersistedServerSettings = Schema.Struct({
   ...ServerSettings.fields,
   responseStreamingMode: PersistedResponseStreamingMode.pipe(
-    Schema.withDecodingDefault(Effect.succeed("paragraph" as const)),
+    Schema.withDecodingDefault(Effect.succeed("token" as const)), // exowatt: stream-default
   ),
   projectSettingsOverrides: Schema.Record(
     ProjectId,

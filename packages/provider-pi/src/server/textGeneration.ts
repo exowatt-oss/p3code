@@ -48,6 +48,9 @@ export const makePiTextGeneration = Effect.fn("makePiTextGeneration")(function* 
         extensionPath: undefined,
         ephemeral: true,
         shortLived: true,
+        // exowatt: Phi's built-in MCP extension ignores --no-extensions; a helper
+        // must not connect every configured MCP server.
+        disableMcp: true,
         disableExtensions: true,
         // Background naming/content helpers must never mutate the workspace.
         disableTools: true,

@@ -16,6 +16,8 @@ const webSourceFiles = NodeFS.readdirSync(NodePath.join(repoRoot, "apps/web/src"
   .map(String)
   .filter((file) => /\.tsx?$/.test(file) && !/\.(test|browser)\.tsx?$/.test(file))
   .filter((file) => !file.endsWith(".gen.ts"))
+  // exowatt: vendored pets code stays an unforked copy (lint exempts it in vite.config.ts too).
+  .filter((file) => !file.startsWith("components/exowatt-pets/vendor/"))
   .map((file) => `apps/web/src/${file}`);
 
 // ChatView is ~9k lines. Compiling it takes ~9s on a fast machine and can pass the

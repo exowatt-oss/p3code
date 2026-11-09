@@ -1,6 +1,6 @@
 # Appearance and themes
 
-On web and desktop, open **Settings → Appearance** to choose a theme and follow the system
+On web and desktop, open **Settings → Customize** (or **Customize** in the sidebar) to choose a theme and follow the system
 appearance or stay in light or dark mode. To use different themes for light and dark mode, select
 the corresponding preview within each theme. Appearance preferences are saved separately on each
 device or browser.
@@ -61,7 +61,7 @@ main local environment. With the desktop app's local environment off, they come 
 [background service](./background-service.md) on the same machine while the app is connected to
 it. app.t3.codes and other connections do not use them.
 
-Select a published theme in **Settings → Appearance** to follow its palette as the server updates
+Select a published theme in **Settings → Customize** to follow its palette as the server updates
 it. **Duplicate** makes an independent copy you can edit. A saved custom theme with the same ID
 takes precedence. If the server stops publishing the selected theme, T3 Code falls back to its
 standard theme.

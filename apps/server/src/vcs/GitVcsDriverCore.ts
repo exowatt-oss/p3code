@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeCrypto from "node:crypto";
 import * as Cache from "effect/Cache";
 import * as Clock from "effect/Clock";
 import * as Data from "effect/Data";
@@ -4963,6 +4965,175 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     },
   );
 
+  const reattachDetachedHead: GitVcsDriver.GitVcsDriver["Service"]["reattachDetachedHead"] =
+    Effect.fn("reattachDetachedHead")(function* (input) {
+      if (!/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u.test(input.expectedSha)) {
+        return yield* new GitCommandError({
+          ...gitCommandContext({
+            operation: "GitVcsDriver.reattachDetachedHead",
+            cwd: input.cwd,
+            args: [],
+          }),
+          detail: "Expected commit is not a Git object ID.",
+        });
+      }
+      yield* executeGit(
+        "GitVcsDriver.reattachDetachedHead.validateBranch",
+        input.cwd,
+        ["check-ref-format", "--branch", input.refName],
+        { timeoutMs: 5_000 },
+      );
+      const failure = (detail: string) =>
+        new GitCommandError({
+          ...gitCommandContext({
+            operation: "GitVcsDriver.reattachDetachedHead",
+            cwd: input.cwd,
+            args: [],
+          }),
+          detail,
+        });
+      const [branchSha, detachedSha, previousHead] = yield* Effect.all([
+        runGitStdout("GitVcsDriver.reattachDetachedHead.branch", input.cwd, [
+          "rev-parse",
+          `refs/heads/${input.refName}`,
+        ]),
+        runGitStdout("GitVcsDriver.reattachDetachedHead.head", input.cwd, ["rev-parse", "HEAD"]),
+        executeGit(
+          "GitVcsDriver.reattachDetachedHead.detached",
+          input.cwd,
+          ["symbolic-ref", "-q", "HEAD"],
+          { allowNonZeroExit: true },
+        ),
+      ]);
+      if (
+        previousHead.exitCode === 0 ||
+        branchSha.trim() !== input.expectedSha ||
+        detachedSha.trim() !== input.expectedSha
+      ) {
+        return yield* failure("Detached HEAD or recorded branch changed before reattachment.");
+      }
+      // Git's HEAD reflog records the actual detached OID at checkout, even
+      // when another process commits after our preflight. Without that journal
+      // we cannot prove which commit to restore, so fail before switching.
+      const headReflog = yield* executeGit(
+        "GitVcsDriver.reattachDetachedHead.reflog",
+        input.cwd,
+        ["reflog", "exists", "HEAD"],
+        { allowNonZeroExit: true, timeoutMs: 5_000 },
+      );
+      if (headReflog.exitCode !== 0) {
+        return yield* failure(
+          "HEAD reflog is unavailable; cannot safely reattach the detached commit.",
+        );
+      }
+      const reflogAction = `t3-reattach-${NodeCrypto.randomUUID()}`;
+      // Git switch enforces sibling-worktree branch occupancy (unlike direct
+      // symbolic-ref updates) and does not resolve a branch name as a file.
+      // A post-checkout hook can fail after Git has already switched HEAD.
+      // Do not short-circuit on its exit status: inspect and recover first.
+      const switchResult = yield* executeGit(
+        "GitVcsDriver.reattachDetachedHead.switch",
+        input.cwd,
+        ["switch", "--no-guess", input.refName],
+        {
+          timeoutMs: 10_000,
+          allowNonZeroExit: true,
+          env: { GIT_REFLOG_ACTION: reflogAction },
+          fallbackErrorDetail: "Could not switch to the recorded branch; inspect Git state.",
+        },
+      );
+      const [attachedSha, attachedHead, headReflogEntries] = yield* Effect.all([
+        runGitStdout("GitVcsDriver.reattachDetachedHead.verifyCommit", input.cwd, [
+          "rev-parse",
+          "HEAD",
+        ]),
+        executeGit(
+          "GitVcsDriver.reattachDetachedHead.verifyBranch",
+          input.cwd,
+          ["symbolic-ref", "-q", "HEAD"],
+          { allowNonZeroExit: true },
+        ),
+        runGitStdout("GitVcsDriver.reattachDetachedHead.journal", input.cwd, [
+          "reflog",
+          "-n",
+          "32",
+          "--format=%H%x09%gs",
+          "HEAD",
+        ]),
+      ]);
+      const journal = headReflogEntries
+        .trim()
+        .split("\n")
+        .map((line) => {
+          const separator = line.indexOf("\t");
+          return { sha: line.slice(0, separator), action: line.slice(separator + 1) };
+        });
+      const entry = journal.findIndex((record) => record.action === reflogAction);
+      const detachedCommit = journal[entry + 1]?.sha;
+      if (
+        entry < 0 ||
+        detachedCommit === undefined ||
+        !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/u.test(detachedCommit)
+      ) {
+        return yield* failure(
+          "Could not recover the pre-switch detached commit from the HEAD reflog; inspect Git state.",
+        );
+      }
+      if (entry !== 0) {
+        return yield* failure(
+          `HEAD moved again during reattachment; original detached commit ${detachedCommit} is in the Git reflog.`,
+        );
+      }
+      if (
+        switchResult.exitCode !== 0 ||
+        detachedCommit !== input.expectedSha ||
+        attachedSha.trim() !== input.expectedSha ||
+        attachedHead.stdout.trim() !== `refs/heads/${input.refName}`
+      ) {
+        // If the branch moved between preflight and switch, never launch the
+        // provider on its new tip. Restore the original detached commit when
+        // Git permits; if another process made edits, Git will refuse rather
+        // than discard them, and the error gives the recovery SHA.
+        const restored = yield* Effect.result(
+          executeGit(
+            "GitVcsDriver.reattachDetachedHead.restore",
+            input.cwd,
+            ["switch", "--detach", detachedCommit],
+            { timeoutMs: 10_000 },
+          ),
+        );
+        return yield* failure(
+          restored._tag === "Success"
+            ? "Detached HEAD or recorded branch moved during reattachment; original detached commit restored."
+            : `Detached HEAD or recorded branch moved during reattachment; inspect Git reflog and recover commit ${detachedCommit}.`,
+        );
+      }
+      const postCheckoutStatus = yield* runGitStdout(
+        "GitVcsDriver.reattachDetachedHead.verifyClean",
+        input.cwd,
+        ["status", "--porcelain", "--untracked-files=all"],
+      );
+      if (postCheckoutStatus.trim().length > 0) {
+        // Hooks can write files during switch without moving HEAD. Never run
+        // the provider on this unexpected state; a normal (non-force) detach
+        // carries the edits when possible and refuses rather than dropping them.
+        const restored = yield* Effect.result(
+          executeGit(
+            "GitVcsDriver.reattachDetachedHead.restoreDirty",
+            input.cwd,
+            ["switch", "--detach", detachedCommit],
+            { timeoutMs: 10_000 },
+          ),
+        );
+        return yield* failure(
+          restored._tag === "Success"
+            ? "Worktree changed during reattachment; detached commit restored with edits intact."
+            : `Worktree changed during reattachment; inspect Git state and recover commit ${detachedCommit} without discarding edits.`,
+        );
+      }
+      return { refName: input.refName };
+    });
+
   const createRef: GitVcsDriver.GitVcsDriver["Service"]["createRef"] = Effect.fn("createRef")(
     function* (input) {
       yield* executeGit("GitVcsDriver.createRef", input.cwd, ["branch", "--", input.refName], {
@@ -5158,6 +5329,9 @@ export const makeGitVcsDriverCore = Effect.fn("makeGitVcsDriverCore")(function* 
     }),
     switchRef: Effect.fnUntraced(function* (input) {
       return yield* withListRefsInvalidation(input.cwd, switchRef(input));
+    }),
+    reattachDetachedHead: Effect.fnUntraced(function* (input) {
+      return yield* withListRefsInvalidation(input.cwd, reattachDetachedHead(input));
     }),
     initRepo: initRepoWithListRefsInvalidation,
     listLocalBranchNames,

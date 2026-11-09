@@ -23,7 +23,7 @@ import {
   type DragStartEvent,
   type Modifier,
 } from "@dnd-kit/core";
-import { SortableContext } from "@dnd-kit/sortable";
+import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { restrictToFirstScrollableAncestor, restrictToVerticalAxis } from "@dnd-kit/modifiers";
 import {
   canSnooze,
@@ -55,11 +55,15 @@ import {
 } from "@t3tools/client-runtime/environment";
 import {
   AuthOrchestrationOperateScope,
+  isOlderSettledThreadShell,
   ProjectId,
   type ScopedThreadRef,
   type ThreadId,
 } from "@t3tools/contracts";
-import type { OlderSettledScope } from "@t3tools/client-runtime/state/threads";
+import type {
+  OlderSettledScope,
+  OlderSettledShelfEnvironment,
+} from "@t3tools/client-runtime/state/threads";
 
 import {
   CheckIcon,
@@ -106,6 +110,7 @@ import { readLocalApi } from "../localApi";
 import { configuredHostedAppUrl } from "../hostedPairing";
 import { useSidebarPendingFileDropStore } from "../sidebarPendingFileDropStore";
 import {
+  getProjectOrderKey,
   pickableProjectGroups,
   selectProjectGroupingSettings,
 } from "@t3tools/client-runtime/state/project-grouping";
@@ -115,7 +120,11 @@ import {
   getSidebarProjectSettingsKey,
   type SidebarProjectSnapshot,
 } from "../sidebarProjectGrouping";
-import { resolveProjectExpanded, useUiStateStore } from "../uiStateStore";
+import {
+  legacyProjectCwdPreferenceKey,
+  resolveProjectExpanded,
+  useUiStateStore,
+} from "../uiStateStore";
 import {
   getThreadKeysToDeselectAfterDelete,
   useThreadSelectionStore,
@@ -125,6 +134,10 @@ import {
   useAcknowledgeThreadWoke,
   useThreadActions,
 } from "../hooks/useThreadActions";
+import {
+  readRestartThreadSessionAvailability,
+  useRestartThreadSession,
+} from "../hooks/useRestartThreadSession";
 import { useHandleNewThread } from "../hooks/useHandleNewThread";
 import { useOrderWhileOpen } from "../hooks/useOrderWhileOpen";
 import { useProjectPin } from "../hooks/useProjectGroupUpdate";
@@ -169,6 +182,7 @@ import {
 } from "../threadRoutes";
 import type { SidebarThreadSummary } from "../types";
 import { isScratchProject } from "@t3tools/client-runtime/state/projects";
+import type { EnvironmentProject } from "@t3tools/client-runtime/state/shell";
 import { cn } from "~/lib/utils";
 import { ProjectEnvironmentBadge } from "./ProjectEnvironmentBadge";
 import { ProjectRowActions } from "./ProjectComboboxRow";
@@ -205,7 +219,6 @@ import {
   sidebarThreadKeyAtY,
   sortInboxThreadsByReturn,
   sortPinnedThreadsForSidebar,
-  sortThreadsForSidebar,
   sortWorkingThreadsBySend,
   useSnoozeWakeClock,
   useThreadJumpHintsVisible,
@@ -252,6 +265,17 @@ import {
 import { SidebarContent, SidebarGroup, useSidebar } from "./ui/sidebar";
 import { SidebarChromeFooter, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { SidebarHeaderIconButton, SidebarThreadHeader } from "./sidebar/SidebarThreadHeader";
+import { ExowattSidebarProjectSectionHeader } from "./exowatt/ExowattSidebarProjectSectionHeader";
+import { EXOWATT_SIDEBAR_OTHER_SECTION_KEY } from "./exowatt/exowattSidebarSections";
+import { ExowattSidebarProjectShelfHeader } from "./exowatt/ExowattSidebarProjectShelfHeader";
+import { useExowattSidebarProjects } from "./exowatt/useExowattSidebarProjects";
+import {
+  resolveExowattSidebarRowProjectPrefix,
+  resolveExowattSidebarRowVariant,
+} from "./exowatt/exowattSidebarDensity";
+// exowatt: P3 sidebar sort, filters and nested subagents.
+import { type ExowattSidebarView, useExowattSidebarView } from "./exowatt/useExowattSidebarView";
+import { exowattShowsActiveChild } from "./exowatt/exowattSidebarNesting";
 import { TooltipProvider } from "./ui/tooltip";
 import { composerDraftHasUserContent, DraftId, useComposerDraftStore } from "../composerDraftStore";
 import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
@@ -358,6 +382,12 @@ interface SidebarThreadPartitionInput {
   // on the clock, so the minute tick, the precise snooze-wake tick and the inbox
   // tracker's expiry version are inputs: a new key repartitions.
   readonly clockKey: string;
+  // exowatt: P3 filters run before classification so every shelf honours them;
+  // the chosen sort mode orders Active (upstream's key order is the Manual mode).
+  readonly filterThreads: ExowattSidebarView["filterThreads"];
+  readonly sortActive: ExowattSidebarView["sortActive"];
+  // exowatt: a chosen sort mode outranks the Working shelf's return order.
+  readonly activeTimeOrdered: boolean;
 }
 
 function scrollSidebarToTop(content: HTMLElement | null) {
@@ -380,6 +410,9 @@ function resolveDraggedOrders(input: {
   readonly settledThreads: readonly EnvironmentThreadShell[];
   readonly activeThreads: readonly EnvironmentThreadShell[];
   readonly workingShelfEnabled: boolean;
+  // exowatt: a computed sort mode is time-ordered too.
+  readonly exowattActiveTimeOrdered: boolean;
+  readonly exowattSortActive: ExowattSidebarView["sortActive"];
 }): typeof NO_DRAGGED_ORDERS {
   const { drag, threadByKey, settledThreads, activeThreads, workingShelfEnabled } = input;
   const thread = threadByKey.get(drag.activeKey);
@@ -391,12 +424,19 @@ function resolveDraggedOrders(input: {
       ...others(settledThreads),
       applySidebarThreadDrop(thread, "settled", drag.occurredAt),
     ]).map(threadShellKey),
-    activeOrder: workingShelfEnabled
-      ? sortInboxThreadsByReturn(
-          [...others(activeThreads), applySidebarThreadDrop(thread, "active", drag.occurredAt)],
-          inboxReturns.returnedAt,
-        ).map(threadShellKey)
-      : undefined,
+    activeOrder: input.exowattActiveTimeOrdered
+      ? input
+          .exowattSortActive([
+            ...others(activeThreads),
+            applySidebarThreadDrop(thread, "active", drag.occurredAt),
+          ])
+          .map(threadShellKey)
+      : workingShelfEnabled
+        ? sortInboxThreadsByReturn(
+            [...others(activeThreads), applySidebarThreadDrop(thread, "active", drag.occurredAt)],
+            inboxReturns.returnedAt,
+          ).map(threadShellKey)
+        : undefined,
   };
 }
 
@@ -423,6 +463,11 @@ function useSidebarThreads(input: {
   readonly folderGroups: readonly SidebarProjectSnapshot[] | null;
   // Keeps folders with no active threads, so a project the user filtered to or pinned can start one.
   readonly keepEmptyFolders: (group: SidebarProjectSnapshot) => boolean;
+  // exowatt: the open thread itself, so a nested subagent keeps its own highlight.
+  readonly routeThreadKey: string | null;
+  readonly projects: ReadonlyArray<EnvironmentProject>;
+  readonly projectGroups: readonly SidebarProjectSnapshot[];
+  readonly primaryEnvironmentId: EnvironmentId | null;
 }) {
   const {
     projectScopeKey,
@@ -437,8 +482,20 @@ function useSidebarThreads(input: {
     keepEmptyFolders: keepEmpty,
   } = input;
   // Folders already separate the work, so boring mode has no Working shelf.
+  // exowatt: P3 project sections are the other grouping; upstream's folders win when both are on.
+  const groupByProject =
+    useClientSettings((s) => s["exowatt.sidebarGroupByProject"]) && folderGroups === null;
+  // Working is a flat-stream shelf; grouped threads remain in Active.
   const workingShelfEnabled =
-    useClientSettings((s) => s.sidebarWorkingShelfEnabled) && folderGroups === null;
+    useClientSettings((s) => s.sidebarWorkingShelfEnabled) &&
+    folderGroups === null &&
+    !groupByProject;
+  // exowatt: P3 sort mode, filters and subagent nesting over the same shells.
+  const exowattSidebarView = useExowattSidebarView({
+    threads,
+    routeThreadKey: input.routeThreadKey,
+    primaryEnvironmentId: input.primaryEnvironmentId,
+  });
   const inboxReturnsVersion = useSyncExternalStore(
     inboxReturns.subscribe,
     inboxReturns.getSnapshot,
@@ -484,20 +541,34 @@ function useSidebarThreads(input: {
     workingShelfEnabled,
     sortActiveBySend: folderGroups !== null,
     clockKey: `${nowMinute}:${snoozeWakeClock}:${inboxReturnsVersion}`,
+    filterThreads: exowattSidebarView.filterThreads,
+    sortActive: exowattSidebarView.sortActive,
+    activeTimeOrdered: exowattSidebarView.activeTimeOrdered,
   });
 
   const { pinnedThreads, activeThreads, workingThreads, snoozedThreads, settledThreads } =
     partition;
   // Older settled threads load in pages; the shelf lists them only as far as they are loaded.
   const olderSettledShelf = useOlderSettledShelf({
-    scopes: olderSettledScopes([...serverConfigs.keys()], scopedProjectKeys),
+    scopes: exowattSidebarView.filterOlderSettledScopes(
+      olderSettledScopes([...serverConfigs.keys()], scopedProjectKeys),
+    ),
     expanded: settledShelfExpanded,
     visibleCount: settledVisibleCount,
   });
   const listedSettledThreads = settledThreads.filter(olderSettledShelf.isListed);
-  useOlderSettledShelfGrowth(olderSettledShelf, listedSettledThreads);
+  // exowatt: pages follow every held settled row, so a P3 filter that hides rows
+  // pages in one page per "Show more", never the whole history.
+  useOlderSettledShelfGrowth(
+    olderSettledShelf,
+    exowattSidebarView.filterActive
+      ? partition.exowattHeldThreads.filter(
+          (thread) => thread.settledOverride === "settled" && olderSettledShelf.isListed(thread),
+        )
+      : listedSettledThreads,
+  );
   const settledCount =
-    settledThreads.length + olderSettledShelf.unloadedCount(partition.visibleThreads);
+    settledThreads.length + olderSettledShelf.unloadedCount(partition.exowattHeldThreads);
   const visibleSettledThreads = (() => {
     const visible = listedSettledThreads.slice(0, settledVisibleCount);
     if (
@@ -540,15 +611,64 @@ function useSidebarThreads(input: {
               : EMPTY_THREADS,
           };
         });
-  const orderedThreads = [
-    ...pinnedThreads,
-    ...(projectFolders === null
-      ? activeThreads
-      : projectFolders.flatMap((folder) => folder.threads)),
-    ...visibleWorkingThreads,
-    ...visibleSnoozedThreads,
-    ...renderedSettledThreads,
-  ];
+  // exowatt: project sections over the already classified/filtered/sorted
+  // shelves. Collapsing a project hides its rows from jump navigation.
+  const projectOrder = useUiStateStore((store) => store.projectOrder);
+  const orderedProjects = orderItemsByPreferredIds({
+    items: input.projects,
+    preferredIds: projectOrder,
+    getId: getProjectOrderKey,
+    getPreferenceIds: (project) => [
+      getProjectOrderKey(project),
+      legacyProjectCwdPreferenceKey(project.workspaceRoot),
+    ],
+  });
+  const exowattProjects = useExowattSidebarProjects({
+    projects: input.projectGroups,
+    orderedProjects,
+    threads,
+    grouped: groupByProject,
+    shelves: {
+      pinned: pinnedThreads,
+      active: activeThreads,
+      snoozed: snoozedThreads,
+      settled: settledThreads,
+      visibleSnoozed: visibleSnoozedThreads,
+      renderedSettled: renderedSettledThreads,
+    },
+  });
+  // exowatt: a project's Settled count includes its older settled threads that are not paged in.
+  const unloadedSettledByProject = exowattProjects.grouped
+    ? unloadedOlderSettledByProject(olderSettledShelf.environments, partition.exowattHeldThreads)
+    : EMPTY_UNLOADED_SETTLED;
+  const exowattUnloadedSettledCountOf = (projectKey: string): number => {
+    const group = input.projectGroups.find((project) => project.projectKey === projectKey);
+    let count = 0;
+    for (const ref of group?.memberProjectRefs ?? []) {
+      count += unloadedSettledByProject.get(`${ref.environmentId}:${ref.projectId}`) ?? 0;
+    }
+    return count;
+  };
+  const orderedThreads = exowattProjects.grouped
+    ? exowattProjects.sections.flatMap((section) =>
+        section.collapsed
+          ? []
+          : [
+              ...section.pinned,
+              ...section.active,
+              ...section.visibleSnoozed,
+              ...section.renderedSettled,
+            ],
+      )
+    : [
+        ...pinnedThreads,
+        ...(projectFolders === null
+          ? activeThreads
+          : projectFolders.flatMap((folder) => folder.threads)),
+        ...visibleWorkingThreads,
+        ...visibleSnoozedThreads,
+        ...renderedSettledThreads,
+      ];
   const sectionByThreadKey = new Map<string, SidebarSection>();
   for (const [list, section] of [
     [pinnedThreads, "pinned"],
@@ -563,6 +683,11 @@ function useSidebarThreads(input: {
     ...partition,
     threads,
     workingShelfEnabled,
+    groupByProject,
+    exowattSidebarView,
+    exowattProjects,
+    exowattUnloadedSettledCountOf,
+    orderedProjects,
     searchableThreads: [
       ...pinnedThreads,
       ...activeThreads,
@@ -620,7 +745,14 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
     sortActiveBySend,
   } = input;
   const preciseNow = new Date().toISOString();
-  const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys, delegatedUnderParent);
+  const exowattHeldThreads = filterSidebarV2VisibleThreads(
+    threads,
+    scopedProjectKeys,
+    delegatedUnderParent,
+  );
+  // exowatt: subagents nest under their parent row instead; P3 filters run
+  // before classification so every shelf honours them.
+  const visible = input.filterThreads(exowattHeldThreads, Date.parse(preciseNow));
   const inboxObservation = inboxReturns.observe(workingShelfEnabled ? threads : null);
   const pinned: EnvironmentThreadShell[] = [];
   const active: EnvironmentThreadShell[] = [];
@@ -675,11 +807,13 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
   }
   // Availability gates dragging only; sorting must stay consistent across clients.
   const sortedPinned = sortPinnedThreadsForSidebar(pinned);
+  // exowatt: upstream's order (key order, or return order with the Working
+  // shelf) is P3's Manual mode; boring-mode folders keep the send order.
   const sortedActive = sortActiveBySend
     ? sortWorkingThreadsBySend(active)
-    : workingShelfEnabled
-      ? sortInboxThreadsByReturn(active, inboxObservation.returnedAt)
-      : sortThreadsForSidebar(active);
+    : input.activeTimeOrdered || !workingShelfEnabled
+      ? input.sortActive(active)
+      : sortInboxThreadsByReturn(active, inboxObservation.returnedAt);
   return {
     pinnedThreads:
       optimisticDrop?.section !== "pinned" || optimisticDrop.order === null
@@ -707,8 +841,33 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
     ),
     settledThreads: sortSettledThreads(settled),
     visibleThreads: visible,
+    exowattHeldThreads,
     snoozeNow: preciseNow,
   };
+}
+
+const EMPTY_UNLOADED_SETTLED: ReadonlyMap<string, number> = new Map();
+
+/** exowatt: older settled threads per `environmentId:projectId` that this client does not hold. */
+function unloadedOlderSettledByProject(
+  environments: ReadonlyMap<EnvironmentId, OlderSettledShelfEnvironment>,
+  heldThreads: readonly EnvironmentThreadShell[],
+): ReadonlyMap<string, number> {
+  const counts = new Map<string, number>();
+  for (const [environmentId, { older }] of environments) {
+    for (const [projectId, count] of older?.counts ?? []) {
+      counts.set(`${environmentId}:${projectId}`, count);
+    }
+  }
+  if (counts.size === 0) return counts;
+  for (const thread of heldThreads) {
+    const older = environments.get(thread.environmentId)?.older;
+    if (older == null || !isOlderSettledThreadShell(thread.source, older.beforeMs)) continue;
+    const key = `${thread.environmentId}:${thread.projectId}`;
+    const count = counts.get(key);
+    if (count !== undefined) counts.set(key, Math.max(0, count - 1));
+  }
+  return counts;
 }
 
 /** The sidebar's scope per environment: the scoped projects there, or every project. */
@@ -914,6 +1073,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const confirmThreadDelete = useClientSettings((s) => s.confirmThreadDelete);
   const confirmThreadArchive = useClientSettings((s) => s.confirmThreadArchive);
   const timestampFormat = useClientSettings((s) => s.timestampFormat);
+  const reorderProjects = useUiStateStore((store) => store.reorderProjects);
+  const exowattProjectSort = useClientSettings((s) => s["exowatt.sidebarProjectSort"]);
+  const exowattDensity = useClientSettings((s) => s["exowatt.sidebarDensity"]);
   const projectGroupingSettings = useClientSettings(selectProjectGroupingSettings);
   const {
     settleThread,
@@ -931,6 +1093,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     archiveThread,
     deleteThread,
   } = useThreadActions();
+  const restartThreadSession = useRestartThreadSession();
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
@@ -1293,6 +1456,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
 
   const {
     workingShelfEnabled,
+    groupByProject,
+    exowattSidebarView,
+    exowattProjects,
+    exowattUnloadedSettledCountOf,
+    orderedProjects,
     pinnedThreads,
     draggableThreadKeys,
     activeReorderableThreadKeys,
@@ -1344,7 +1512,37 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       : null,
     keepEmptyFolders: (group) =>
       scopedProjectGroups.length > 0 || (group.pinned && !group.archived),
+    routeThreadKey,
+    projects,
+    projectGroups,
+    primaryEnvironmentId,
   });
+  const { sortActive: exowattSortActive, activeTimeOrdered: exowattActiveTimeOrdered } =
+    exowattSidebarView;
+  const moveExowattProjectSection = (sourceKey: string, targetKey: string) => {
+    if (
+      exowattProjectSort !== "manual" ||
+      !groupByProject ||
+      sourceKey === EXOWATT_SIDEBAR_OTHER_SECTION_KEY ||
+      targetKey === EXOWATT_SIDEBAR_OTHER_SECTION_KEY
+    )
+      return;
+    const source = projectGroups.find((project) => project.projectKey === sourceKey);
+    const target = projectGroups.find((project) => project.projectKey === targetKey);
+    if (!source || !target) return;
+    const physicalKeys = new Map(
+      projects.map(
+        (project) =>
+          [`${project.environmentId}:${project.id}`, getProjectOrderKey(project)] as const,
+      ),
+    );
+    const keys = (project: typeof source) =>
+      project.memberProjectRefs.flatMap((ref) => {
+        const key = physicalKeys.get(`${ref.environmentId}:${ref.projectId}`);
+        return key ? [key] : [];
+      });
+    reorderProjects(orderedProjects.map(getProjectOrderKey), keys(source), keys(target));
+  };
 
   // Ranked across environments as the palette ranks them, so one
   // environment's list does not sit above another's better matches; rows
@@ -1915,7 +2113,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     });
   };
   const hasProjectFolders = projectFolders !== null && projectFolders.length > 0;
-  const sidebarListItemsFresh = ((): readonly SidebarListItem[] => {
+  // The original v2 layout remains the canonical DnD order. The grouped
+  // display is a projection of these rows, not a change to their order keys.
+  const flatSidebarListItems = ((): readonly SidebarListItem[] => {
     const rowsOf = (
       list: readonly EnvironmentThreadShell[],
       section: SidebarSection,
@@ -1957,6 +2157,42 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     items.push(...settledRows);
     return items;
   })();
+  // exowatt: every visible row in its displayed order for keyboard traversal
+  // and dnd-kit measurement. A collapsed project's rows do not register.
+  const sidebarListItemsFresh: readonly SidebarListItem[] = exowattProjects.grouped
+    ? exowattProjects.sections.flatMap((project) =>
+        project.collapsed
+          ? []
+          : [
+              ...project.pinned.map((thread) => ({ thread, section: "pinned" as const })),
+              ...project.active.map((thread) => ({ thread, section: "active" as const })),
+              ...project.visibleSnoozed.map((thread) => ({ thread, section: "snoozed" as const })),
+              ...project.renderedSettled.map((thread) => ({
+                thread,
+                section: "settled" as const,
+              })),
+            ].map(({ thread, section }) => ({
+              kind: "thread" as const,
+              key: scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+              section,
+            })),
+      )
+    : flatSidebarListItems;
+  const groupedProjectByThreadKey = new Map<string, string>();
+  for (const project of exowattProjects.sections) {
+    if (project.projectKey === null) continue;
+    for (const thread of [
+      ...project.pinned,
+      ...project.active,
+      ...project.visibleSnoozed,
+      ...project.renderedSettled,
+    ]) {
+      groupedProjectByThreadKey.set(
+        scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
+        project.projectKey,
+      );
+    }
+  }
   // Preserve the list while streamed updates leave order unchanged to retain row memoization.
   const sidebarListItemsKey = sidebarListItemsFresh
     .map((item) => (item.kind === "thread" ? item.section + ":" + item.key : item.marker))
@@ -1970,6 +2206,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     // Update the local list too; threadByKey already omits rows moved into collapsed shelves.
     sidebarListItems = sidebarListItemsFresh;
   }
+  const dragPlanItems = exowattProjects.grouped ? flatSidebarListItems : sidebarListItems;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- cancels the dnd-kit drag sensor when the dragged row leaves the list
   useEffect(() => {
     if (
@@ -2005,7 +2242,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   }, [listMotionPass, shelfExpansionKey]);
   const handleThreadDragOver = (event: DragOverEvent) => {
     const target = event.over
-      ? resolveSidebarDropTarget(sidebarListItems, String(event.active.id), String(event.over.id))
+      ? resolveSidebarDropTarget(dragPlanItems, String(event.active.id), String(event.over.id))
       : null;
     setDragState((current) =>
       current === null || current.activeKey !== String(event.active.id)
@@ -2024,10 +2261,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           settledThreads,
           activeThreads,
           workingShelfEnabled,
+          exowattActiveTimeOrdered,
+          exowattSortActive,
         });
   const sidebarSortingStrategy = createSidebarSortingStrategy({
     items: sidebarListItems,
-    enabled: !isContextDrag,
+    enabled: !isContextDrag && !exowattProjects.grouped,
     boundaryLabelHeight: SIDEBAR_DRAG_LABEL_HEIGHT,
     settledOrder: draggedSettledOrder,
     ...(draggedActiveOrder === undefined ? {} : { activeOrder: draggedActiveOrder }),
@@ -2046,7 +2285,15 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     if (source === undefined) return createSidebarCollisionDetection(() => false);
     return createSidebarCollisionDetection(
       (id) => {
-        const target = resolveSidebarDropTarget(sidebarListItems, draggedThreadKey, id);
+        const over = sidebarListItems.find((item) => sidebarListItemId(item) === id);
+        if (
+          exowattProjects.grouped &&
+          (over?.kind !== "thread" ||
+            over.section !== draggedFromSection ||
+            groupedProjectByThreadKey.get(id) !== groupedProjectByThreadKey.get(draggedThreadKey))
+        )
+          return false;
+        const target = resolveSidebarDropTarget(dragPlanItems, draggedThreadKey, id);
         if (target === null) return false;
         return (
           planSidebarThreadDrop({
@@ -2062,7 +2309,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             activeOrder: activeKeys,
             activeKeysById,
             activeReorderableKeys: activeReorderableThreadKeys,
-            activeTimeOrdered: workingShelfEnabled,
+            // exowatt: rows only arrange inside Active in Manual sort.
+            activeTimeOrdered: workingShelfEnabled || exowattActiveTimeOrdered,
           }).kind !== "none"
         );
       },
@@ -2078,9 +2326,17 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     const target =
       event.over === null
         ? null
-        : resolveSidebarDropTarget(sidebarListItems, activeKey, String(event.over.id));
+        : resolveSidebarDropTarget(dragPlanItems, activeKey, String(event.over.id));
     const activeThread = threadByKey.get(activeKey);
     if (activeSection === undefined || target === null || activeThread === undefined) return;
+    if (
+      exowattProjects.grouped &&
+      (event.over === null ||
+        sectionByThreadKey.get(String(event.over.id)) !== activeSection ||
+        groupedProjectByThreadKey.get(String(event.over.id)) !==
+          groupedProjectByThreadKey.get(activeKey))
+    )
+      return;
     const threadRef = scopeThreadRef(activeThread.environmentId, activeThread.id);
     const plan = planSidebarThreadDrop({
       activeKey,
@@ -2095,7 +2351,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       activeOrder: activeKeys,
       activeKeysById,
       activeReorderableKeys: activeReorderableThreadKeys,
-      activeTimeOrdered: workingShelfEnabled,
+      activeTimeOrdered: workingShelfEnabled || exowattActiveTimeOrdered, // exowatt
     });
     if (plan.kind === "none") return;
     if (plan.kind === "settle" && settlingThreadKeysRef.current.has(activeKey)) return;
@@ -2613,6 +2869,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 projectRef.projectId === thread.projectId,
             ),
           ) ?? null;
+        const canRestartSession = readRestartThreadSessionAvailability(threadRef);
         const clicked = await settlePromise(() =>
           api.contextMenu.show(
             buildThreadActionMenuItems({
@@ -2635,6 +2892,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
               isSnoozed,
               canSnoozeNow: canSnooze(thread, { now: new Date().toISOString() }),
               isRegeneratingTitle,
+              canRestartSession,
               isRunning: !threadRuntimeCanArchive(thread.runtime),
               canShareWithGuest: appAtomRegistry.get(
                 canShareWithGuestAtom(threadRef.environmentId),
@@ -2782,6 +3040,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
             }
             return;
           }
+          case "restart-session":
+            await restartThreadSession(threadRef);
+            return;
           case "mark-unread":
             markThreadUnread(threadRef);
             return;
@@ -3188,6 +3449,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                   </ComboboxPopup>
                 </Combobox>
               }
+              threadView={exowattSidebarView.control /* exowatt: sort + filters */}
               onNewProject={openAddProjectCommandPalette}
               onNewThread={handleNewThreadClick}
               newThreadDisabled={projects.length === 0}
@@ -3302,7 +3564,14 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                 onDragOver={handleThreadDragOver}
                 onDragEnd={handleThreadDragEnd}
               >
-                <SortableContext items={sortableIds} strategy={sidebarSortingStrategy}>
+                <SortableContext
+                  items={sortableIds}
+                  strategy={
+                    exowattProjects.grouped && !isContextDrag
+                      ? verticalListSortingStrategy
+                      : sidebarSortingStrategy
+                  }
+                >
                   <ul
                     ref={attachTreeRef}
                     // Presentation flattens VoiceOver's list interaction boundary while preserving descendant
@@ -3328,15 +3597,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         const threadKey = scopedThreadKey(
                           scopeThreadRef(thread.environmentId, thread.id),
                         );
-                        const isCard =
-                          section === "active" || section === "pinned" || section === "working";
+                        // exowatt: P3 density picks card/slim; upstream's folder rows keep their own.
                         const rowVariant = folderRow
                           ? folderRowsMultiline
                             ? "folder-multiline"
                             : "folder"
-                          : isCard
-                            ? "card"
-                            : "slim";
+                          : resolveExowattSidebarRowVariant(section, exowattDensity);
                         return (
                           <SortableThreadRow
                             key={threadKey}
@@ -3345,6 +3611,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             sortableDisabled={
                               projectFolders !== null ||
                               renamingThreadKey === threadKey ||
+                              (exowattProjects.grouped &&
+                                section !== "pinned" &&
+                                !(section === "active" && !exowattActiveTimeOrdered)) ||
                               !draggableThreadKeys.has(threadKey) ||
                               optimisticDrop !== null
                             }
@@ -3358,6 +3627,16 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                 ? `shelf:${section}`
                                 : undefined)
                             }
+                            exowattCompact={exowattDensity === "compact" && folderRow === undefined}
+                            exowattProjectPrefix={resolveExowattSidebarRowProjectPrefix({
+                              density: exowattDensity,
+                              grouped: exowattProjects.grouped || folderRow !== undefined,
+                              scopedToOneProject: scopedProjectKeys !== null,
+                              projectTitle:
+                                projectDisplayNameByKey.get(
+                                  `${thread.environmentId}:${thread.projectId}`,
+                                ) ?? null,
+                            })}
                             variantAction={
                               section === "snoozed"
                                 ? "unsnooze"
@@ -3388,7 +3667,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                 : null
                             }
                             wokeAt={threadWokeAt(thread, { now: snoozeNow })}
-                            isActive={routeRowThreadKey === threadKey}
+                            isActive={
+                              routeRowThreadKey === threadKey &&
+                              // exowatt: an expanded child list highlights the open child instead.
+                              !exowattShowsActiveChild(
+                                exowattSidebarView.rowNestingByKey.get(threadKey),
+                              )
+                            }
                             revealRef={
                               routeRowThreadKey === threadKey ? revealActiveRow : undefined
                             }
@@ -3414,6 +3699,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                 `${thread.environmentId}:${thread.projectId}`,
                               ) ?? null
                             }
+                            exowattHideProjectLabel={exowattProjects.grouped}
                             providerEntryByInstanceId={
                               providerEntriesByEnvironment.get(thread.environmentId) ??
                               EMPTY_PROVIDER_ENTRIES
@@ -3436,6 +3722,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             onUnpin={attemptUnpin}
                             onAcknowledgeWoke={acknowledgeWoke}
                             onFileDropThreads={handleThreadFileDrop}
+                            exowattNesting={exowattSidebarView.rowNestingByKey.get(threadKey)}
+                            exowattOrigin={exowattSidebarView.originByKey.get(threadKey)}
                           />
                         );
                       };
@@ -3451,6 +3739,72 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           onDraftContextMenu={handleDraftContextMenu}
                         />,
                       ];
+                      if (exowattProjects.grouped) {
+                        for (const project of exowattProjects.sections) {
+                          const sectionKey = project.projectKey;
+                          if (sectionKey === null || project.title === null) continue;
+                          items.push(
+                            <ExowattSidebarProjectSectionHeader
+                              key={`${sectionKey}:header`}
+                              projectKey={sectionKey}
+                              title={project.title}
+                              threadCount={project.threadCount}
+                              collapsed={project.collapsed}
+                              onToggle={exowattProjects.toggleProjectCollapsed}
+                              onMove={
+                                exowattProjectSort === "manual" &&
+                                sectionKey !== EXOWATT_SIDEBAR_OTHER_SECTION_KEY
+                                  ? moveExowattProjectSection
+                                  : undefined
+                              }
+                            />,
+                          );
+                          if (project.collapsed) continue;
+                          for (const thread of project.pinned)
+                            items.push(renderThreadRow(thread, "pinned"));
+                          if (project.pinned.length > 0) {
+                            items.push(
+                              <li
+                                key={`${sectionKey}:pinned-divider`}
+                                aria-hidden
+                                data-testid="sidebar-pinned-divider"
+                                className="mx-2.5 my-1.5 h-px list-none bg-sidebar-border/60"
+                              />,
+                            );
+                          }
+                          for (const thread of project.active)
+                            items.push(renderThreadRow(thread, "active"));
+                          if (project.snoozed.length > 0) {
+                            items.push(
+                              <ExowattSidebarProjectShelfHeader
+                                key={`${sectionKey}:snoozed`}
+                                shelf="snoozed"
+                                count={project.snoozed.length}
+                                expanded={snoozedShelfExpanded}
+                                onToggle={toggleSnoozedShelf}
+                              />,
+                            );
+                            for (const thread of project.visibleSnoozed)
+                              items.push(renderThreadRow(thread, "snoozed"));
+                          }
+                          const projectSettledCount =
+                            project.settled.length + exowattUnloadedSettledCountOf(sectionKey);
+                          if (projectSettledCount > 0) {
+                            items.push(
+                              <ExowattSidebarProjectShelfHeader
+                                key={`${sectionKey}:settled`}
+                                shelf="settled"
+                                count={projectSettledCount}
+                                expanded={settledShelfExpanded}
+                                onToggle={toggleSettledShelf}
+                              />,
+                            );
+                            for (const thread of project.renderedSettled)
+                              items.push(renderThreadRow(thread, "settled"));
+                          }
+                        }
+                        return items;
+                      }
                       for (const item of sidebarListItems) {
                         if (item.kind === "thread") {
                           // Folders draw active rows in their own place below.
@@ -3645,6 +3999,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                     Add project
                   </button>
                 </>
+              ) : exowattSidebarView.filterActive ? (
+                "No threads match the sidebar filters" // exowatt
               ) : scopedProjectGroups.length > 1 ? (
                 "No threads in these projects yet"
               ) : scopedProjectGroups[0] ? (

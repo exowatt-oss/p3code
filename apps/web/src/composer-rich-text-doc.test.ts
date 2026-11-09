@@ -322,6 +322,9 @@ describe("composer rich text document model", () => {
     "- [ ]\n- [ ] next\n",
     "- [ ] parent\n  - [ ] child\n- [ ]",
     "para\n- [ ] task\npara",
+    "- first\n- last\n- \nfollowing paragraph",
+    "- first\n- last\n- \n\nfollowing paragraph",
+    "- [ ] first\n- [ ] last\n- [ ] \nfollowing paragraph",
     "**before @README.md after**",
   ])("maps editable positions in %s", (value) => {
     const doc = ProseMirrorNode.fromJSON(

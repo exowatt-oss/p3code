@@ -1,3 +1,6 @@
+import { DEFAULT_CLIENT_SETTINGS } from "@t3tools/contracts/settings";
+import * as DesktopClientSettings from "../../settings/DesktopClientSettings.ts";
+import * as DesktopSshEnvironment from "../../ssh/DesktopSshEnvironment.ts";
 import { assert, describe, it } from "@effect/vitest";
 import { SshHttpBridgeError } from "@t3tools/ssh/errors";
 import * as Cause from "effect/Cause";
@@ -8,6 +11,7 @@ import * as Option from "effect/Option";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
 import {
+  ensureSshEnvironment,
   DesktopSshEnvironmentRequestError,
   fetchSshEnvironmentDescriptor,
 } from "./sshEnvironment.ts";
@@ -58,5 +62,48 @@ describe("SSH environment IPC", () => {
       assert.instanceOf(error.cause, SshHttpBridgeError);
       assert.equal(requestCount, 0);
     }).pipe(Effect.provide(layer));
+  });
+});
+
+describe("SSH health-check preference", () => {
+  it.effect("reads saved settings on each connect and defaults to five seconds", () => {
+    const timeouts: Array<number | undefined> = [];
+    const ssh = DesktopSshEnvironment.DesktopSshEnvironment.of({
+      runRemoteOperation: () => Effect.die("Unexpected remote operation"),
+      discoverHosts: () => Effect.succeed([]),
+      resolveHost: () => Effect.die("Unexpected SSH host resolution"),
+      disconnectEnvironment: () => Effect.void,
+      ensureEnvironment: (target, options) =>
+        Effect.sync(() => {
+          timeouts.push(options?.probeTimeoutMs);
+          assert.isTrue(options?.issuePairingToken);
+          return {
+            target,
+            httpBaseUrl: "http://127.0.0.1:3773/",
+            wsBaseUrl: "ws://127.0.0.1:3773/",
+            pairingToken: "test",
+          };
+        }),
+    });
+    return Effect.gen(function* () {
+      const settings = yield* DesktopClientSettings.DesktopClientSettings;
+      const input = {
+        target: { alias: "vm", hostname: "vm", username: "dev", port: 22 },
+        options: { issuePairingToken: true },
+      };
+      yield* ensureSshEnvironment.handler(input);
+      yield* settings.set({ ...DEFAULT_CLIENT_SETTINGS, remoteHealthCheckTimeoutSeconds: 10 });
+      yield* ensureSshEnvironment.handler(input);
+      yield* settings.set(DEFAULT_CLIENT_SETTINGS);
+      yield* ensureSshEnvironment.handler(input);
+      assert.deepEqual(timeouts, [5_000, 10_000, 5_000]);
+    }).pipe(
+      Effect.provide(
+        Layer.merge(
+          DesktopClientSettings.layerTest(),
+          Layer.succeed(DesktopSshEnvironment.DesktopSshEnvironment, ssh),
+        ),
+      ),
+    );
   });
 });

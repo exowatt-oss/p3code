@@ -9,6 +9,7 @@ export const READ_MEDIA_CHANNEL = "desktop:read-media";
 export const OPEN_SYSTEM_SETTINGS_CHANNEL = "desktop:open-system-settings";
 export const PROBE_REMOTE_EDITORS_CHANNEL = "desktop:probe-remote-editors";
 export const MENU_ACTION_CHANNEL = "desktop:menu-action";
+export const NAVIGATE_HISTORY_CHANNEL = "desktop:navigate-history";
 export const PASTE_AS_TEXT_CHANNEL = "desktop:paste-as-text";
 export const REVEAL_WINDOW_CHANNEL = "desktop:reveal-window";
 export const SNAP_SHOT_EVENT_CHANNEL = "desktop:snap-shot-event";
@@ -31,6 +32,7 @@ export const UPDATE_CHECK_CHANNEL = "desktop:update-check";
 export const CLI_COMMAND_GET_STATE_CHANNEL = "desktop:cli-command-get-state";
 export const CLI_COMMAND_INSTALL_CHANNEL = "desktop:cli-command-install";
 export const CLI_COMMAND_UNINSTALL_CHANNEL = "desktop:cli-command-uninstall";
+export const RESTART_APPLICATION_CHANNEL = "desktop:restart-application";
 export const GET_APP_BRANDING_CHANNEL = "desktop:get-app-branding";
 export const GET_RELAY_TELEMETRY_ENABLED_CHANNEL = "desktop:get-relay-telemetry-enabled";
 export const GET_SYSTEM_LOCALE_CHANNEL = "desktop:get-system-locale";
@@ -68,6 +70,14 @@ export const BOOTSTRAP_SSH_BEARER_SESSION_CHANNEL = "desktop:bootstrap-ssh-beare
 export const FETCH_SSH_SESSION_STATE_CHANNEL = "desktop:fetch-ssh-session-state";
 export const SSH_PASSWORD_PROMPT_CHANNEL = "desktop:ssh-password-prompt";
 export const RESOLVE_SSH_PASSWORD_PROMPT_CHANNEL = "desktop:resolve-ssh-password-prompt";
+// Exowatt: stop upstream's stock T3 server/service on an SSH remote.
+export const EXOWATT_STOP_REMOTE_STOCK_SERVER_CHANNEL = "desktop:exowatt-stop-remote-stock-server";
+// Exowatt: reveal the local app log directory in the OS file manager.
+export const EXOWATT_OPEN_LOGS_DIRECTORY_CHANNEL = "desktop:exowatt-open-logs-directory";
+// Exowatt: main -> renderer, background remote server upgrade finished/failed.
+export const EXOWATT_REMOTE_SERVER_EVENT_CHANNEL = "desktop:exowatt-remote-server-event";
+// Exowatt (dev builds): install the worktree's packed server on an SSH remote.
+export const EXOWATT_PUSH_DEV_SERVER_CHANNEL = "desktop:exowatt-push-dev-server";
 export const GET_SERVER_EXPOSURE_STATE_CHANNEL = "desktop:get-server-exposure-state";
 export const SET_SERVER_EXPOSURE_MODE_CHANNEL = "desktop:set-server-exposure-mode";
 export const SET_TAILSCALE_SERVE_ENABLED_CHANNEL = "desktop:set-tailscale-serve-enabled";

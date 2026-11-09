@@ -7003,6 +7003,7 @@ describe("AcpAdapterV2", () => {
           new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
         );
         const baseClock = yield* Clock.Clock;
+        const finalizeScheduled = yield* Deferred.make<void>();
         const finalizationClockRead = yield* Deferred.make<void>();
         const releaseFinalizationClockRead = yield* Deferred.make<void>();
         let blockNextClockRead = false;
@@ -7032,6 +7033,10 @@ describe("AcpAdapterV2", () => {
             testHooks: {
               afterPromptSettledWithBackgroundWork: () =>
                 Deferred.succeed(promptSettled, undefined).pipe(Effect.asVoid),
+              // Keep the pending-work pin without blocking the deferred-finalize
+              // timer, so the test can stop inside finalizeTurn deterministically.
+              onDeferredFinalizeScheduled: () =>
+                Deferred.succeed(finalizeScheduled, undefined).pipe(Effect.asVoid),
             },
             instanceId,
             flavor: {
@@ -7118,7 +7123,6 @@ describe("AcpAdapterV2", () => {
             makeTurnInput({ threadId, providerThread, instanceId, runtimePolicy, now }),
           );
           yield* Deferred.await(promptSettled);
-          yield* TestClock.adjust("1 second");
           assert.isDefined(sessionUpdateHandler, "session update handler must be wired");
 
           firstSubagentStatus = "completed";
@@ -7152,6 +7156,7 @@ describe("AcpAdapterV2", () => {
 
           while (Option.isSome(yield* Queue.poll(events))) {}
 
+          yield* Deferred.await(finalizeScheduled);
           blockNextClockRead = true;
           const adjustFiber = yield* TestClock.adjust("3 seconds").pipe(Effect.forkScoped);
           yield* Deferred.await(finalizationClockRead);

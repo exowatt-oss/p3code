@@ -43,6 +43,8 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { Button, InlineButton } from "../ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "../ui/empty";
 import {
+  EXOWATT_P3_SERVER_UPDATE_GUIDANCE,
+  requiresExowattDesktopServerUpdate,
   resolveServerConfigVersionMismatch,
   resolveServerSelfUpdateCapability,
   supportsDesktopAppUpdate,
@@ -358,13 +360,24 @@ export function SavedBackendListRow({
       {unsupported &&
       environment.entry.serverUpdateRequired === true &&
       serverUpdateState.status !== "running" ? (
-        <OutdatedServerUpdateAction
-          environmentId={environmentId}
-          serverLabel={`${environment.label} server`}
-          fromVersion={lastDescriptor?.serverVersion}
-          targetVersion={APP_VERSION}
-          label={serverUpdateState.status === "failed" ? "Retry update" : "Update"}
-        />
+        // exowatt: an outdated P3 server never installs stock `t3`; it updates from the P3 app.
+        requiresExowattDesktopServerUpdate({
+          selfUpdate: lastDescriptor?.capabilities.serverSelfUpdate ?? null,
+          serverVersion: lastDescriptor?.serverVersion,
+          targetVersion: APP_VERSION,
+        }) ? (
+          <span className="text-muted-foreground text-xs">
+            {EXOWATT_P3_SERVER_UPDATE_GUIDANCE}.
+          </span>
+        ) : (
+          <OutdatedServerUpdateAction
+            environmentId={environmentId}
+            serverLabel={`${environment.label} server`}
+            fromVersion={lastDescriptor?.serverVersion}
+            targetVersion={APP_VERSION}
+            label={serverUpdateState.status === "failed" ? "Retry update" : "Update"}
+          />
+        )
       ) : null}
       {showUpdateAction ? (
         <ServerUpdateAction
@@ -374,6 +387,7 @@ export function SavedBackendListRow({
           installation={environment.serverConfig?.environment.capabilities.serverInstallation}
           desktopAppUpdate={supportsDesktopAppUpdate(environment.serverConfig)}
           targetVersion={versionMismatch.clientVersion}
+          serverVersion={versionMismatch.serverVersion}
           label={serverUpdateState.status === "failed" ? "Retry update" : "Update"}
           appearance="icon"
         />

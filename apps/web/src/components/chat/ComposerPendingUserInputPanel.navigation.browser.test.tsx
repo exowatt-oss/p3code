@@ -20,6 +20,7 @@ import { act, fakeTimers, render } from "../../../test/render";
 import { useComposerDraftStore } from "../../composerDraftStore";
 import { makeThreadProjectionFixture } from "../../test-fixtures";
 import { toastManager } from "../ui/toast";
+import { ComposerPendingUserInputPanel } from "./ComposerPendingUserInputPanel";
 import { usePendingThreadRequests } from "./usePendingThreadRequests";
 
 const threadRef = { environmentId: EnvironmentId.make("env"), threadId: ThreadId.make("thread") };
@@ -264,4 +265,41 @@ it("isolates drafts by environment, thread and request and discards only resolve
       index === 0 ? undefined : `Answer ${index}`,
     );
   }
+});
+
+// exowatt: free-text questions are answered in the composer.
+it("points a free-text question at the composer instead of showing no way to answer", async () => {
+  await using screen = await render(
+    <ComposerPendingUserInputPanel
+      pendingUserInputs={[
+        {
+          ...prompt,
+          requestId: RuntimeRequestId.make("request-free-text"),
+          questions: [
+            {
+              id: "value",
+              header: "Decision",
+              question: "Should I file the request, or will you take it directly?",
+              options: [],
+              multiSelect: false,
+            },
+          ],
+        },
+      ]}
+      cwd="/repo"
+      threadRef={threadRef}
+      disabled={false}
+      respondingRequestIds={[]}
+      answers={{}}
+      questionIndex={0}
+      onAdvance={() => {}}
+      onToggleOption={() => {}}
+      onDismiss={() => {}}
+    />,
+  );
+
+  await expect
+    .element(screen.getByText("Should I file the request, or will you take it directly?"))
+    .toBeVisible();
+  await expect.element(screen.getByText("Type your answer in the composer below.")).toBeVisible();
 });

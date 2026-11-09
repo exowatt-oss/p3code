@@ -24,7 +24,7 @@ import {
 } from "@t3tools/contracts";
 
 import packageJson from "../../package.json" with { type: "json" };
-import { parseBearerToken } from "../auth/EnvironmentAuth.ts";
+import { EnvironmentAuth, parseBearerToken } from "../auth/EnvironmentAuth.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as DeviceService from "../device/DeviceService.ts";
@@ -41,6 +41,23 @@ import {
   toolOutcome,
 } from "../telemetry/ProviderDimensions.ts";
 import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
+// exowatt: environment-session principal and the P3 toolkits.
+import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
+import * as ExowattMcpPrincipal from "./McpToolVisibility.ts";
+import { ClientSettingsToolkitHandlersLive } from "./toolkits/clientSettings/handlers.ts";
+import { ClientSettingsToolkit } from "./toolkits/clientSettings/tools.ts";
+import { HarnessToolkitHandlersLive } from "./toolkits/harness/handlers.ts";
+import { HarnessToolkit } from "./toolkits/harness/tools.ts";
+import { SettingsToolkitHandlersLive } from "./toolkits/settings/handlers.ts";
+import { SettingsToolkit } from "./toolkits/settings/tools.ts";
+import { ThreadFocusToolkitHandlersLive } from "./toolkits/threadFocus/handlers.ts";
+import { ThreadFocusToolkit } from "./toolkits/threadFocus/tools.ts";
+import { ThreadHubToolkitHandlersLive } from "./toolkits/threadHub/handlers.ts"; // exowatt
+import { ThreadHubToolkit } from "./toolkits/threadHub/tools.ts"; // exowatt
+import { ThreadSignalsToolkitHandlersLive } from "./toolkits/threadSignals/handlers.ts"; // exowatt
+import { ThreadSignalsToolkit } from "./toolkits/threadSignals/tools.ts"; // exowatt
+import { ThreadsToolkitHandlersLive } from "./toolkits/threads/handlers.ts";
+import { ThreadsToolkit } from "./toolkits/threads/tools.ts";
 import * as McpInvocationContext from "./McpInvocationContext.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import * as OrchestratorMcpService from "./OrchestratorMcpService.ts";
@@ -203,16 +220,83 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
     Effect.map((settings) => settings.linkedEnvironmentsEnabled),
     Effect.orElseSucceed(() => false),
   );
+  // exowatt: optional so upstream test layers that build only the registry
+  // keep working; the server always provides both.
+  const environmentAuth = yield* Effect.serviceOption(EnvironmentAuth);
+  const serverEnvironment = yield* Effect.serviceOption(ServerEnvironment.ServerEnvironment);
+
+  // exowatt: provider sessions get the P3 toolkits while the user's agent-tool
+  // settings allow it. Read per request so a settings change applies at once.
+  const withExowattCapabilities = (scope: McpInvocationContext.McpInvocationScope) =>
+    serverSettings.getSettings.pipe(
+      Effect.map((settings) =>
+        ExowattMcpPrincipal.withThreadSignals(
+          ExowattMcpPrincipal.providerSessionsGetCommandCenter(settings)
+            ? ExowattMcpPrincipal.withCommandCenter(scope)
+            : scope,
+          settings,
+        ),
+      ),
+      Effect.orElseSucceed(() => scope),
+    );
+
+  // exowatt: a bearer that is neither a provider-session credential nor an
+  // OAuth MCP-client session may be an environment auth session minted by
+  // `t3 agent token`.
+  const resolveEnvironmentSession = Effect.fn("McpHttpServer.resolveEnvironmentSession")(function* (
+    request: HttpServerRequest.HttpServerRequest,
+  ) {
+    if (Option.isNone(environmentAuth) || Option.isNone(serverEnvironment)) {
+      return undefined;
+    }
+    const session = yield* environmentAuth.value
+      .authenticateMcpHttpRequest(request)
+      .pipe(Effect.option);
+    if (Option.isNone(session)) return undefined;
+    // Read per request, failing closed: a linked environment's session needs this server's
+    // own inbound setting on, and runs no higher than it.
+    const settings = yield* serverSettings.getSettings.pipe(Effect.orElseSucceed(() => undefined));
+    const scope = ExowattMcpPrincipal.environmentSessionMcpScope({
+      environmentId: yield* serverEnvironment.value.getEnvironmentId,
+      session: session.value,
+      issuedAt: yield* Clock.currentTimeMillis,
+      ...(settings === undefined ? {} : { peerInbound: settings.exowattPeerInbound }),
+    });
+    if (scope === "peer_inbound_off") {
+      yield* Effect.logWarning("rejected MCP request from a linked environment: inbound is off", {
+        sessionId: session.value.sessionId,
+      });
+      return scope;
+    }
+    if (scope === "insufficient_scope") {
+      yield* Effect.logWarning("rejected MCP request from a session without operate scope", {
+        sessionId: session.value.sessionId,
+        subject: session.value.subject,
+      });
+      return scope;
+    }
+    return settings === undefined ? scope : ExowattMcpPrincipal.withThreadSignals(scope, settings);
+  });
+
   const authenticateRequest = Effect.fn("McpHttpServer.authenticateRequest")(function* (
     request: HttpServerRequest.HttpServerRequest,
   ) {
     const authorization = request.headers.authorization;
     const token = parseBearerToken(request) ?? "";
+    const providerInvocation = yield* registry.resolve(token);
     const invocation =
-      (yield* registry.resolve(token)) ??
-      (Option.isSome(clients) && token.length > 0
-        ? yield* clients.value.authenticate(request)
-        : undefined);
+      providerInvocation !== undefined
+        ? yield* withExowattCapabilities(providerInvocation)
+        : token.length === 0
+          ? undefined
+          : ((Option.isSome(clients) ? yield* clients.value.authenticate(request) : undefined) ??
+            (yield* resolveEnvironmentSession(request)));
+    if (invocation === "insufficient_scope") {
+      return ExowattMcpPrincipal.insufficientScopeResponse();
+    }
+    if (invocation === "peer_inbound_off") {
+      return ExowattMcpPrincipal.peerInboundOffResponse();
+    }
     if (!invocation) {
       yield* Effect.logWarning("rejected MCP request with an unusable credential", {
         reason:
@@ -243,7 +327,12 @@ const makeMcpAuthMiddleware = Effect.gen(function* () {
     if (HttpServerResponse.isHttpServerResponse(admitted)) return admitted;
     return yield* httpEffect.pipe(
       Effect.provideService(McpInvocationContext.McpInvocationContext, admitted),
-      Effect.map(normalizeMcpHttpResponse),
+      Effect.map((response) =>
+        normalizeMcpHttpResponse(
+          // exowatt: one shared registry answers tools/list; show each principal only its tools.
+          ExowattMcpPrincipal.filterMcpToolsListResponse(admitted, response),
+        ),
+      ),
     );
   }) satisfies McpAuthMiddleware;
 }).pipe(Effect.withSpan("McpHttpServer.makeAuthMiddleware"));
@@ -1106,6 +1195,44 @@ const provideRegistrationServices = <Services>() =>
   );
 
 /**
+ * exowatt: refuse a call `McpToolVisibility.mcpToolCallRefusal` rules out (a linked
+ * environment's session outside its allowlist, `environmentId` on a local-only Threads
+ * tool) before the handler decodes and runs it.
+ */
+const withExowattCallGate =
+  /* Request instrumentation already owns the span; keep this helper in that context. */
+  Effect.fnUntraced(function* <A, E, R>(registration: Effect.Effect<A, E, R>) {
+    const server = yield* McpServer.McpServer;
+    const gatedServer = McpServer.McpServer.of({
+      ...server,
+      addTool: Effect.fn("McpHttpServer.addGatedTool")(function (options) {
+        return server.addTool({
+          ...options,
+          handle: (payload) =>
+            Effect.serviceOption(McpInvocationContext.McpInvocationContext).pipe(
+              Effect.flatMap((scope) => {
+                const refusal = ExowattMcpPrincipal.mcpToolCallRefusal(
+                  Option.getOrUndefined(scope),
+                  options.tool.name,
+                  payload,
+                );
+                return refusal === null
+                  ? options.handle(payload)
+                  : Effect.succeed(
+                      new McpSchema.CallToolResult({
+                        isError: true,
+                        content: [{ type: "text", text: refusal }],
+                      }),
+                    );
+              }),
+            ),
+        });
+      }),
+    });
+    return yield* registration.pipe(Effect.provideService(McpServer.McpServer, gatedServer));
+  });
+
+/**
  * Tools declare their handler services as request-level dependencies. Those
  * built with the server are provided here; `McpInvocationContext` is left to
  * the transport, whose auth middleware resolves it per request.
@@ -1115,9 +1242,12 @@ export const toolkitRegistration = <Tools extends Record<string, Tool.Any>, EX, 
   handlers: McpToolAccess.HandlersLayer<Tools, EX, RX>,
 ) =>
   Layer.effectDiscard(
-    withToolAnalytics(
-      withToolSpans(
-        withAdvertisedSchemas(toolkit, McpServer.registerToolkit(decodeAsAdvertised(toolkit))),
+    // exowatt: the P3 call gate sits outside analytics and spans, so a refused call records neither.
+    withExowattCallGate(
+      withToolAnalytics(
+        withToolSpans(
+          withAdvertisedSchemas(toolkit, McpServer.registerToolkit(decodeAsAdvertised(toolkit))),
+        ),
       ),
     ),
   ).pipe(
@@ -1134,7 +1264,7 @@ const imageToolRegistration = <Tools extends Record<string, Tool.Any>, A, E, R, 
   register: Effect.Effect<A, E, R>,
   handlers: McpToolAccess.HandlersLayer<Tools, EX, RX>,
 ) =>
-  Layer.effectDiscard(withToolAnalytics(withToolSpans(register))).pipe(
+  Layer.effectDiscard(withExowattCallGate(withToolAnalytics(withToolSpans(register)))).pipe(
     Layer.provide(McpToolAccess.HandlersLayer.layer(handlers)),
   );
 
@@ -1226,6 +1356,17 @@ export const layerInProcessMcpServer = McpServer.middleware<{
   { global: true },
 ).pipe(Layer.provideMerge(McpServer.McpServer.layer));
 
+// exowatt: the P3 toolkits, gated by the "command-center" capability.
+export const layerExowattToolkits = Layer.mergeAll(
+  toolkitRegistration(ThreadsToolkit, ThreadsToolkitHandlersLive),
+  toolkitRegistration(ThreadFocusToolkit, ThreadFocusToolkitHandlersLive),
+  toolkitRegistration(ThreadHubToolkit, ThreadHubToolkitHandlersLive),
+  toolkitRegistration(ThreadSignalsToolkit, ThreadSignalsToolkitHandlersLive),
+  toolkitRegistration(HarnessToolkit, HarnessToolkitHandlersLive),
+  toolkitRegistration(SettingsToolkit, SettingsToolkitHandlersLive),
+  toolkitRegistration(ClientSettingsToolkit, ClientSettingsToolkitHandlersLive),
+);
+
 export const layerMcpTransport = <RA, RE, RR>(registrations: Layer.Layer<RA, RE, RR>) =>
   McpServer.layerHttp({
     name: "T3 Code",
@@ -1251,4 +1392,5 @@ export const layerTools = Layer.mergeAll(
   layerHtmlToolkit,
 );
 
-export const layer = layerMcpTransport(layerTools);
+// exowatt: the P3 toolkits ride beside `layerTools`, outside the agent-context budget it measures.
+export const layer = layerMcpTransport(Layer.mergeAll(layerTools, layerExowattToolkits));

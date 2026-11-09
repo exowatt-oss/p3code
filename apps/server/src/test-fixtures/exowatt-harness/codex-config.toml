@@ -1,0 +1,16 @@
+model = "gpt-5"
+
+[mcp_servers.docs]
+command = "npx"
+args = ["-y", "@example/docs"]
+enabled = false
+
+[mcp_servers.linear]
+url = "https://mcp.example.com"
+enabled = true
+
+[plugins."documents@example"]
+enabled = true
+
+[plugins."legacy@example"]
+enabled = false

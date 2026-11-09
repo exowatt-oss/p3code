@@ -1040,6 +1040,7 @@ type ShellThreadRow = {
   readonly pending_request_payload_json: string | null;
   readonly pending_secret_request_payload_json: string | null;
   readonly pending_link_request_payload_json: string | null;
+  readonly latest_workspace_state_payload_json: string | null;
   readonly latest_user_message_at: string | null;
   readonly latest_user_authored_message_at: string | null;
   readonly has_actionable_proposed_plan: number;
@@ -1533,6 +1534,18 @@ const linkCardStillAsks = (
   latestUserAuthoredMessageAt === null ||
   !DateTime.isGreaterThan(latestUserAuthoredMessageAt, item.startedAt ?? item.updatedAt);
 
+function latestWorkspaceStateForShell(
+  providerTurnId: OrchestrationV2ThreadProjection["providerTurns"][number]["id"] | null,
+  turnItems: OrchestrationV2ThreadProjection["turnItems"],
+): OrchestrationV2ThreadShell["latestWorkspaceState"] {
+  if (providerTurnId === null) return null;
+  const item = turnItems.findLast(
+    (candidate) =>
+      candidate.providerTurnId === providerTurnId && candidate.type === "workspace_state",
+  );
+  return item?.type === "workspace_state" ? item.payload : null;
+}
+
 export function threadShellFromProjection(
   projection: OrchestrationV2ThreadProjection,
 ): OrchestrationV2ThreadShell {
@@ -1663,6 +1676,10 @@ export function threadShellFromProjection(
     ),
     pendingRuntimeRequest,
     pendingGuestMessageCount: pendingGuestMessageCount(projection.thread.guestShare),
+    latestWorkspaceState: latestWorkspaceStateForShell(
+      projection.providerTurns?.at(-1)?.id ?? null,
+      projection.turnItems ?? [],
+    ),
     // Thread detail owns message bodies. Keeping them out of shell rows makes
     // initial hydration and streaming updates independent of transcript size.
     latestVisibleMessage: null,
@@ -1777,6 +1794,7 @@ type ShellThreadState = {
   readonly lastErrorCode: OrchestrationV2ThreadShell["lastErrorCode"];
   readonly usageLimitResetAt: OrchestrationV2ThreadShell["usageLimitResetAt"];
   readonly pendingRuntimeRequest: OrchestrationV2PendingRuntimeRequestSummary | null;
+  readonly latestWorkspaceState: OrchestrationV2ThreadShell["latestWorkspaceState"];
   readonly latestUserMessageAt: DateTime.Utc | null;
   readonly latestUserAuthoredMessageAt: DateTime.Utc | null;
   readonly hasActionableProposedPlan: boolean;
@@ -1939,6 +1957,7 @@ function shellFromState(input: {
     usageLimitResetAt: input.state.usageLimitResetAt,
     pendingRuntimeRequest: input.state.pendingRuntimeRequest,
     pendingGuestMessageCount: pendingGuestMessageCount(input.state.thread.guestShare),
+    latestWorkspaceState: input.state.latestWorkspaceState,
     latestVisibleMessage: null,
     latestUserMessageAt: input.state.latestUserMessageAt,
     latestUserAuthoredMessageAt: input.state.latestUserAuthoredMessageAt,
@@ -6319,6 +6338,20 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                 LIMIT 1
               ) AS pending_link_request_payload_json,
               (
+                SELECT item.payload_json
+                FROM orchestration_v2_projection_turn_items item
+                  INDEXED BY orchestration_v2_projection_turn_items_provider_turn_idx
+                WHERE item.thread_id = t.thread_id
+                  AND item.type = 'workspace_state'
+                  AND item.provider_turn_id = (
+                    SELECT turn.provider_turn_id
+                    FROM orchestration_v2_projection_provider_turns turn
+                    WHERE turn.thread_id = t.thread_id
+                    ORDER BY turn.rowid DESC LIMIT 1
+                  )
+                ORDER BY item.ordinal DESC LIMIT 1
+              ) AS latest_workspace_state_payload_json,
+              (
                 SELECT message.updated_at
                 FROM orchestration_v2_projection_messages message
                 WHERE message.thread_id = t.thread_id
@@ -6841,6 +6874,10 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             pendingRuntimeRequest = waitingCard;
           }
         }
+        const workspaceStateItem =
+          row.latest_workspace_state_payload_json === null
+            ? null
+            : yield* decodeTurnItemPayload(row.latest_workspace_state_payload_json);
         let terminalFailureItem =
           row.terminal_failure_payload_json === null
             ? null
@@ -6937,6 +6974,8 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             row.last_error,
           ),
           pendingRuntimeRequest,
+          latestWorkspaceState:
+            workspaceStateItem?.type === "workspace_state" ? workspaceStateItem.payload : null,
           latestUserMessageAt:
             row.latest_user_message_at === null
               ? null
@@ -7275,6 +7314,20 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
             OR EXISTS (
               SELECT 1 FROM json_each(t.payload_json, '$.pullRequests') link
               WHERE json_type(link.value, '$.watch') IS NOT NULL
+            )
+            -- exowatt: a Phi hand-back waiting on the user (latestWorkspaceState awaiting-human).
+            OR EXISTS (
+              SELECT 1 FROM orchestration_v2_projection_turn_items handback
+                INDEXED BY orchestration_v2_projection_turn_items_provider_turn_idx
+              WHERE handback.thread_id = t.thread_id
+                AND handback.type = 'workspace_state'
+                AND json_extract(handback.payload_json, '$.payload.endState') = 'awaiting-human'
+                AND handback.provider_turn_id = (
+                  SELECT turn.provider_turn_id
+                  FROM orchestration_v2_projection_provider_turns turn
+                  WHERE turn.thread_id = t.thread_id
+                  ORDER BY turn.rowid DESC LIMIT 1
+                )
             )
           ) AS may_be_live
         FROM orchestration_v2_projection_threads t

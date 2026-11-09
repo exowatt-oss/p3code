@@ -224,6 +224,10 @@ export const OrchestrationV2ProviderTurnTokenUsage = Schema.Struct({
   promptCacheTtlMs: Schema.optional(PositiveInt),
   autoCompactThreshold: Schema.optional(PositiveInt),
   promptCacheExpiresAt: Schema.optional(Schema.String),
+  /** exowatt: provider-reported USD cost of the whole native session so far (Pi `get_session_stats.cost`). */
+  costUsd: Schema.optional(
+    Schema.Number.check(Schema.isFinite(), Schema.isGreaterThanOrEqualTo(0)),
+  ),
   updatedAt: Schema.String,
 });
 export type OrchestrationV2ProviderTurnTokenUsage =
@@ -1566,6 +1570,13 @@ const OrchestrationV2SecretRequestFields = {
   delivery: Schema.optional(OrchestrationV2SecretRequestDelivery),
   secretStatus: OrchestrationV2SecretRequestStatus,
 } as const;
+const OrchestrationV2WorkspaceStatePayload = Schema.Struct({
+  endState: Schema.Literals(["complete", "awaiting-human", "mid-work", "blocked-approval"]),
+  question: Schema.optional(Schema.String),
+  openItems: Schema.Array(Schema.String),
+  feadsEpic: Schema.optional(Schema.String),
+  recordedAt: Schema.String,
+});
 
 export const OrchestrationV2LinkRequestStatus = Schema.Literals([
   "pending",
@@ -1604,6 +1615,11 @@ const OrchestrationV2LinkRequestFields = {
 } as const;
 
 export const OrchestrationV2TurnItem = Schema.Union([
+  Schema.Struct({
+    ...OrchestrationV2TurnItemBaseFields,
+    type: Schema.Literal("workspace_state"),
+    payload: OrchestrationV2WorkspaceStatePayload,
+  }),
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
     type: Schema.Literal("notification"),
@@ -2120,6 +2136,15 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   pendingRuntimeRequest: Schema.NullOr(OrchestrationV2PendingRuntimeRequestSummary),
   /** Guest messages waiting for the owner to send or dismiss. Absent from older servers. */
   pendingGuestMessageCount: Schema.optional(NonNegativeInt),
+  /** Passive hand-back of the latest provider turn, not a respondable runtime request. */
+  latestWorkspaceState: Schema.optional(
+    Schema.NullOr(
+      Schema.Struct({
+        endState: OrchestrationV2WorkspaceStatePayload.fields.endState,
+        question: OrchestrationV2WorkspaceStatePayload.fields.question,
+      }),
+    ),
+  ),
   latestVisibleMessage: Schema.NullOr(OrchestrationV2LatestVisibleMessageSummary),
   latestUserMessageAt: Schema.NullOr(Schema.DateTimeUtc),
   /** Excludes wakes and agent messages that advance latestUserMessageAt through the user role. */
@@ -2179,14 +2204,20 @@ const LIVE_SHELL_STATUSES: ReadonlySet<OrchestrationV2ShellThreadStatus> = new S
 export function isLiveSubagentShell(
   thread: Pick<
     OrchestrationV2ThreadShell,
-    "activityRunStatus" | "status" | "pendingRuntimeRequest" | "pendingBackgroundTasks"
+    | "activityRunStatus"
+    | "status"
+    | "pendingRuntimeRequest"
+    | "pendingBackgroundTasks"
+    | "latestWorkspaceState"
   >,
 ): boolean {
   return (
     (thread.activityRunStatus ?? null) !== null ||
     LIVE_SHELL_STATUSES.has(thread.status) ||
     thread.pendingRuntimeRequest !== null ||
-    (thread.pendingBackgroundTasks?.length ?? 0) > 0
+    (thread.pendingBackgroundTasks?.length ?? 0) > 0 ||
+    // exowatt: a Phi hand-back (needs-you) keeps the child in the sidebar.
+    thread.latestWorkspaceState?.endState === "awaiting-human"
   );
 }
 
@@ -2441,6 +2472,11 @@ const OrchestrationV2TurnItemJsonBaseFields = {
 } as const;
 
 export const OrchestrationV2TurnItemJson = Schema.Union([
+  Schema.Struct({
+    ...OrchestrationV2TurnItemJsonBaseFields,
+    type: Schema.Literal("workspace_state"),
+    payload: OrchestrationV2WorkspaceStatePayload,
+  }),
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,
     type: Schema.Literal("notification"),

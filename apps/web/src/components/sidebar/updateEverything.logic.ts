@@ -11,6 +11,7 @@ import { cliReleaseChannelOf, desktopUpdateChannelOf } from "@t3tools/shared/cli
 import { compareSemverVersions } from "@t3tools/shared/semver";
 
 import {
+  EXOWATT_P3_SERVER_UPDATE_GUIDANCE,
   resolveServerSelfUpdateCapability,
   resolveVersionMismatch,
   supportsDesktopAppUpdate,
@@ -64,6 +65,32 @@ export interface SkippedMachine {
   readonly environmentId: EnvironmentId;
   readonly label: string;
   readonly reason: string;
+}
+
+/**
+ * exowatt: P3 servers never self-update from npm (`t3` on npm is stock T3 Code, without Phi).
+ * Only a desktop-managed server stays a target: its own P3 desktop installs the update through
+ * the P3 Homebrew updater. Every other behind server is skipped, so the run never asks npm.
+ */
+export function partitionExowattServerUpdateTargets<
+  Target extends Pick<ServerUpdateTarget, "environmentId" | "serverLabel" | "selfUpdate">,
+>(
+  targets: ReadonlyArray<Target>,
+): { readonly targets: Target[]; readonly skipped: SkippedMachine[] } {
+  const kept: Target[] = [];
+  const skipped: SkippedMachine[] = [];
+  for (const target of targets) {
+    if (target.selfUpdate === "desktop-managed") {
+      kept.push(target);
+    } else {
+      skipped.push({
+        environmentId: target.environmentId,
+        label: target.serverLabel,
+        reason: EXOWATT_P3_SERVER_UPDATE_GUIDANCE,
+      });
+    }
+  }
+  return { targets: kept, skipped };
 }
 
 /** Skip current and app-hosted servers; the latter update with the app and would relaunch mid-run.

@@ -19,6 +19,7 @@ import {
   collectServerUpdateTargets,
   collectUpdateEverythingResult,
   describeUpdateEverything,
+  partitionExowattServerUpdateTargets,
   runUpdateEverything,
   type UpdateRunMachine,
 } from "./updateEverything.logic";
@@ -66,9 +67,15 @@ export function useUpdateEverything(
     canMaintain: canUpdateServer(sessionStates[index]!),
     updateState: updateStates[index]!,
   }));
-  const { targets: servers, skipped } = channelSwitch
+  const { targets: behindServers, skipped: unreachable } = channelSwitch
     ? collectChannelSwitchTargets(machines, channelSwitch)
     : collectServerUpdateTargets(machines, targetVersion);
+  // exowatt: P3 replaces upstream's npm `t3` server update; see
+  // partitionExowattServerUpdateTargets. It also filters a track switch, so a switch never
+  // moves a non-desktop P3 server to npm/GitHub.
+  const { targets: servers, skipped: npmServers } =
+    partitionExowattServerUpdateTargets(behindServers);
+  const skipped = [...unreachable, ...npmServers];
   // Track-only hosts save a setting and restart nothing, so they are neither listed nor counted.
   const moving = servers.filter((server) => server.trackOnly !== true);
   const restarts = collectRestartingMachines(machines, moving, localUpdateVersion !== null);

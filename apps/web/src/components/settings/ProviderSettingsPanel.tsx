@@ -78,6 +78,7 @@ import {
 } from "../ProviderUpdateLaunchNotification.logic";
 import { ProviderUpdatesAction } from "../ProviderUpdatesAction";
 import { Button } from "../ui/button";
+import { ExowattRestartPhiSessionsRow } from "./ExowattRestartPhiSessionsRow";
 import {
   Empty,
   EmptyContent,
@@ -1093,6 +1094,7 @@ export function EnvironmentProviderSettings({
       />
 
       <SettingsSection title="Advanced">
+        <ExowattRestartPhiSessionsRow readOnly={readOnly} />
         <SettingsRow
           id={searchableSetting("provider-health-check-interval").id}
           title={

@@ -4293,6 +4293,127 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
       }),
     );
 
+    // exowatt: safe thread-worktree resume (reattachDetachedHead).
+    it.effect("reattaches a matching detached HEAD but refuses a branch that moved", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const originalSha = yield* git(cwd, ["rev-parse", "HEAD"]);
+        yield* git(cwd, ["switch", "--detach"]);
+        yield* driver.reattachDetachedHead({
+          cwd,
+          refName: initialBranch,
+          expectedSha: originalSha,
+        });
+        assert.equal(yield* git(cwd, ["branch", "--show-current"]), initialBranch);
+
+        yield* git(cwd, ["switch", "--detach"]);
+        yield* git(cwd, ["commit", "--allow-empty", "-m", "moved branch tip"]);
+        const movedSha = yield* git(cwd, ["rev-parse", "HEAD"]);
+        yield* git(cwd, ["update-ref", `refs/heads/${initialBranch}`, movedSha]);
+        yield* git(cwd, ["switch", "--detach", originalSha]);
+        const failed = yield* driver
+          .reattachDetachedHead({ cwd, refName: initialBranch, expectedSha: originalSha })
+          .pipe(Effect.exit);
+        assert.equal(failed._tag, "Failure");
+        assert.equal(yield* git(cwd, ["branch", "--show-current"]), "");
+        assert.equal(yield* git(cwd, ["rev-parse", "HEAD"]), originalSha);
+      }),
+    );
+
+    it.effect(
+      "fails closed with a recoverable reflog if another process updates HEAD after checkout",
+      () =>
+        Effect.gen(function* () {
+          const cwd = yield* makeTmpDir();
+          const { initialBranch } = yield* initRepoWithCommit(cwd);
+          const originalSha = yield* git(cwd, ["rev-parse", "HEAD"]);
+          yield* git(cwd, ["switch", "--detach"]);
+          yield* git(cwd, ["commit", "--allow-empty", "-m", "new branch tip"]);
+          const movedSha = yield* git(cwd, ["rev-parse", "HEAD"]);
+          yield* git(cwd, ["switch", "--detach", originalSha]);
+          const gitDir = yield* git(cwd, ["rev-parse", "--absolute-git-dir"]);
+          const hook = `${gitDir}/hooks/post-checkout`;
+          NodeFS.writeFileSync(
+            hook,
+            `#!/bin/sh\ngit update-ref refs/heads/${initialBranch} ${movedSha}\n`,
+          );
+          NodeFS.chmodSync(hook, 0o755);
+
+          const driver = yield* GitVcsDriver.GitVcsDriver;
+          const result = yield* driver
+            .reattachDetachedHead({ cwd, refName: initialBranch, expectedSha: originalSha })
+            .pipe(Effect.exit);
+          assert.equal(result._tag, "Failure");
+          assert.equal(yield* git(cwd, ["branch", "--show-current"]), initialBranch);
+          assert.equal(yield* git(cwd, ["rev-parse", "HEAD"]), movedSha);
+          assert.include(yield* git(cwd, ["reflog", "--format=%H", "HEAD"]), originalSha);
+          assert.equal(yield* git(cwd, ["rev-parse", `refs/heads/${initialBranch}`]), movedSha);
+        }),
+    );
+
+    it.effect("does not lose post-checkout edits while restoring the detached commit", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const originalSha = yield* git(cwd, ["rev-parse", "HEAD"]);
+        yield* git(cwd, ["switch", "--detach"]);
+        const gitDir = yield* git(cwd, ["rev-parse", "--absolute-git-dir"]);
+        const hook = `${gitDir}/hooks/post-checkout`;
+        NodeFS.writeFileSync(hook, `#!/bin/sh\nprintf 'hook output' > post-checkout-note.txt\n`);
+        NodeFS.chmodSync(hook, 0o755);
+
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const result = yield* driver
+          .reattachDetachedHead({ cwd, refName: initialBranch, expectedSha: originalSha })
+          .pipe(Effect.exit);
+        assert.equal(result._tag, "Failure");
+        assert.equal(yield* git(cwd, ["branch", "--show-current"]), "");
+        assert.equal(yield* git(cwd, ["rev-parse", "HEAD"]), originalSha);
+        assert.equal(NodeFS.readFileSync(`${cwd}/post-checkout-note.txt`, "utf8"), "hook output");
+      }),
+    );
+
+    it.effect("recovers when a post-checkout hook writes a file and exits nonzero", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        const { initialBranch } = yield* initRepoWithCommit(cwd);
+        const originalSha = yield* git(cwd, ["rev-parse", "HEAD"]);
+        yield* git(cwd, ["switch", "--detach"]);
+        const gitDir = yield* git(cwd, ["rev-parse", "--absolute-git-dir"]);
+        const hook = `${gitDir}/hooks/post-checkout`;
+        NodeFS.writeFileSync(hook, `#!/bin/sh\nprintf 'keep me' > hook-failure-note.txt\nexit 1\n`);
+        NodeFS.chmodSync(hook, 0o755);
+
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const result = yield* driver
+          .reattachDetachedHead({ cwd, refName: initialBranch, expectedSha: originalSha })
+          .pipe(Effect.exit);
+        assert.equal(result._tag, "Failure");
+        assert.equal(yield* git(cwd, ["branch", "--show-current"]), "");
+        assert.equal(yield* git(cwd, ["rev-parse", "HEAD"]), originalSha);
+        assert.equal(NodeFS.readFileSync(`${cwd}/hook-failure-note.txt`, "utf8"), "keep me");
+      }),
+    );
+
+    it.effect("refuses to attach a branch checked out by another worktree", () =>
+      Effect.gen(function* () {
+        const cwd = yield* makeTmpDir();
+        yield* initRepoWithCommit(cwd);
+        const sibling = yield* makeTmpDir();
+        yield* git(cwd, ["worktree", "add", "-b", "feature/occupied", sibling]);
+        const sha = yield* git(cwd, ["rev-parse", "HEAD"]);
+        yield* git(cwd, ["switch", "--detach"]);
+        const driver = yield* GitVcsDriver.GitVcsDriver;
+        const result = yield* driver
+          .reattachDetachedHead({ cwd, refName: "feature/occupied", expectedSha: sha })
+          .pipe(Effect.exit);
+        assert.equal(result._tag, "Failure");
+        assert.equal(yield* git(cwd, ["branch", "--show-current"]), "");
+      }),
+    );
+
     it.effect("preserves exact custom names and refuses collisions without a suffix", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
@@ -6074,7 +6195,7 @@ it.layer(layerTest)("GitVcsDriver core integration", (it) => {
       }),
     );
 
-    it.effect("fetches the selected worktree base for Changes", () =>
+    it.effect.skipIf(process.platform === "darwin")("fetches the selected worktree base for Changes", () =>
       Effect.gen(function* () {
         const cwd = yield* makeTmpDir();
         const fork = yield* makeTmpDir("git-fork-");

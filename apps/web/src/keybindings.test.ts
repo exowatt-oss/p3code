@@ -142,6 +142,11 @@ const DEFAULT_BINDINGS = compile([
     whenAst: whenNot(whenIdentifier("terminalFocus")),
   },
   {
+    shortcut: modShortcut(","),
+    command: "settings.open",
+    whenAst: whenNot(whenIdentifier("terminalFocus")),
+  },
+  {
     shortcut: modShortcut("p"),
     command: "filePicker.toggle",
     whenAst: whenNot(whenIdentifier("terminalFocus")),
@@ -426,6 +431,28 @@ describe("model picker navigation helpers", () => {
 });
 
 describe("chat/editor shortcuts", () => {
+  // exowatt: Open Settings shortcut (mod+,).
+  it("matches Open Settings from normal screens, including editable fields", () => {
+    assert.strictEqual(
+      resolveShortcutCommand(event({ key: ",", metaKey: true }), DEFAULT_BINDINGS, {
+        platform: "MacIntel",
+        context: { terminalFocus: false },
+      }),
+      "settings.open",
+    );
+    assert.notStrictEqual(
+      resolveShortcutCommand(event({ key: ",", metaKey: true }), DEFAULT_BINDINGS, {
+        platform: "MacIntel",
+        context: { terminalFocus: true },
+      }),
+      "settings.open",
+    );
+    assert.strictEqual(
+      shortcutLabelForCommand(DEFAULT_BINDINGS, "settings.open", "MacIntel"),
+      "⌘,",
+    );
+  });
+
   it("toggles the thread panel by default without taking terminal keystrokes", () => {
     for (const platform of ["MacIntel", "Win32", "Linux"]) {
       const input = event({

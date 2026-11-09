@@ -56,4 +56,34 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("GitWorkflowServi
       ),
     ),
   );
+
+  // exowatt: safe thread-worktree resume reads commits through the workflow service.
+  it.effect("resolves Git commits through the workflow service", () => {
+    const calls: Array<GitVcsDriver.GitResolveCommitInput> = [];
+    const layer = GitWorkflowService.layer.pipe(
+      Layer.provide(
+        Layer.mock(VcsDriverRegistry.VcsDriverRegistry)({
+          resolve: () => Effect.succeed({ kind: "git" } as VcsDriverRegistry.VcsDriverHandle),
+        }),
+      ),
+      Layer.provide(
+        Layer.mock(GitVcsDriver.GitVcsDriver)({
+          resolveCommit: (input) =>
+            Effect.sync(() => {
+              calls.push(input);
+              return { commitSha: "abc123" };
+            }),
+        }),
+      ),
+      Layer.provide(Layer.mock(GitManager.GitManager)({})),
+    );
+
+    return Effect.gen(function* () {
+      const workflow = yield* GitWorkflowService.GitWorkflowService;
+      const result = yield* workflow.resolveCommit({ cwd: "/repo", revision: "HEAD" });
+
+      assert.equal(result.commitSha, "abc123");
+      assert.deepEqual(calls, [{ cwd: "/repo", revision: "HEAD" }]);
+    }).pipe(Effect.provide(layer));
+  });
 });

@@ -17,6 +17,7 @@ import {
 
 import { fromYaml } from "@t3tools/shared/schemaYaml";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import { PRODUCT_BASE_NAME } from "@t3tools/shared/productBranding";
 import { clerkFrontendApiHostnameFromPublishableKey } from "@t3tools/shared/relayAuth";
 import { resolveSpawnCommand } from "@t3tools/shared/shell";
 import rootPackageJson from "../package.json" with { type: "json" };
@@ -43,6 +44,11 @@ import {
 import { loadRepoEnv } from "./lib/public-config.ts";
 import { selectDesktopRuntimeExternalDependencies } from "./lib/desktop-external-packages.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
+import {
+  EXOWATT_REMOTE_SERVER_EXTRA_RESOURCE,
+  EXOWATT_REMOTE_SERVER_FILE_EXCLUSIONS,
+  stageExowattRemoteServerPackage,
+} from "./lib/exowatt-remote-server-package.ts";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -62,7 +68,9 @@ import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 const LINUX_ICON_SIZES = [16, 22, 24, 32, 48, 64, 128, 256, 512] as const;
-const DESKTOP_APP_ID = "com.t3tools.t3code";
+// Keep P3's native app identity distinct from stock T3 Code. User data and
+// deep-link schemes intentionally remain on their existing `t3code` names.
+const DESKTOP_APP_ID = "com.exowatt.p3code";
 const APPLE_TEAM_ID_PATTERN = /^[A-Z0-9]{10}$/u;
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
@@ -1002,6 +1010,7 @@ export const DESKTOP_FILE_EXCLUSIONS = [
   "!apps/desktop/prod-resources/wsl-runtime.tar.gz.sha256",
   "!apps/desktop/gnome-extension",
   "!apps/desktop/gnome-extension/**/*",
+  ...EXOWATT_REMOTE_SERVER_FILE_EXCLUSIONS,
 ] as const;
 // Windows terminal helpers cannot run on macOS and slow signing and notarization.
 export const MAC_FILE_EXCLUSIONS = [
@@ -1099,6 +1108,8 @@ export const DESKTOP_EXTRA_RESOURCES = [
     from: "apps/desktop/prod-resources/resource-monitor",
     to: "resource-monitor",
   },
+  // Exowatt distro: P3 server tarball for SSH remotes (see lib/exowatt-remote-server-package.ts).
+  EXOWATT_REMOTE_SERVER_EXTRA_RESOURCE,
 ] as const;
 export const LINUX_CAPTURE_EXTRA_RESOURCES = [
   {
@@ -1118,7 +1129,6 @@ export const LINUX_CAPTURE_EXTRA_RESOURCES = [
 export const LINUX_BROWSER_SECRET_EXTRA_RESOURCES = [
   { from: "apps/desktop/prod-resources/browser-secret", to: "browser-secret" },
 ] as const;
-
 export interface MacPasskeySigningConfiguration {
   readonly appId: string;
   readonly teamId: string;
@@ -2759,8 +2769,8 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
 
 export function resolveDesktopProductName(version: string): string {
   return resolveDesktopUpdateChannel(version) === "nightly"
-    ? "T3 Code (Nightly)"
-    : (desktopPackageJson.productName ?? "T3 Code");
+    ? `${PRODUCT_BASE_NAME} (Nightly)`
+    : (desktopPackageJson.productName ?? PRODUCT_BASE_NAME);
 }
 
 export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
@@ -2778,12 +2788,15 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     | undefined,
   wslRuntimeBundled = false,
   arch?: typeof BuildArch.Type,
+  // P3 publishes only the Homebrew-consumed DMG. Upstream releases retain
+  // the ZIP because electron-updater consumes it.
+  dmgOnly = false,
 ) {
   const buildConfig: Record<string, unknown> = {
     afterPack: (yield* Path.Path).join(yield* RepoRoot, "scripts/prepare-server-compile-cache.cjs"),
     appId: DESKTOP_APP_ID,
     productName: resolveDesktopProductName(version),
-    artifactName: "T3-Code-${version}-${arch}.${ext}",
+    artifactName: "P3-Code-${version}-${arch}.${ext}",
     electronLanguages: [...DESKTOP_ELECTRON_LANGUAGES],
     files: [
       ...DESKTOP_FILE_EXCLUSIONS,
@@ -2829,20 +2842,20 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     const path = yield* Path.Path;
     const repoRoot = yield* RepoRoot;
     buildConfig.mac = {
-      target: target === "dmg" ? [target, "zip"] : [target],
+      target: target === "dmg" && !dmgOnly ? [target, "zip"] : [target],
       icon: "icon.icns",
       category: "public.app-category.developer-tools",
       extendInfo: {
         // macOS 26 offers Messages/Mail codes in every text field unless opted out.
         NSAutoFillRequiresTextContentTypeForOneTimeCodeOnMac: true,
         NSLocalNetworkUsageDescription:
-          "T3 Code connects to devices on your local network for remote environments and commands run by terminals and coding agents.",
+          "P3 Code connects to devices on your local network for remote environments and commands run by terminals and coding agents.",
         NSScreenCaptureUsageDescription:
-          "T3 Code captures the active window when you use the window capture shortcut.",
+          "P3 Code captures the active window when you use the window capture shortcut.",
         NSCameraUsageDescription:
-          "T3 Code lets commands run by terminals and coding agents use the camera.",
+          "P3 Code lets commands run by terminals and coding agents use the camera.",
         NSMicrophoneUsageDescription:
-          "T3 Code lets commands run by terminals and coding agents use the microphone.",
+          "P3 Code lets commands run by terminals and coding agents use the microphone.",
         // macOS lists an app under Default web browser only when it opens web
         // pages as documents as well as http and https links (see protocols).
         CFBundleDocumentTypes: [
@@ -2856,7 +2869,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       },
       protocols: [
         {
-          name: "T3 Code",
+          name: PRODUCT_BASE_NAME,
           schemes: ["t3code", "t3code-dev"],
         },
         {
@@ -2906,10 +2919,10 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       icon: "icons",
       category: "Development",
       synopsis: "Desktop GUI for coding agents",
-      maintainer: "T3 Tools <hello@t3.codes>",
+      maintainer: "P3 Code Maintainers <software@exowatt.com>",
       protocols: [
         {
-          name: "T3 Code",
+          name: PRODUCT_BASE_NAME,
           schemes: ["t3code", "t3code-dev"],
         },
       ],
@@ -3789,6 +3802,30 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     arch: options.arch,
     verbose: options.verbose,
   });
+  // Exowatt distro: SSH remotes install this exact server build instead of
+  // upstream `t3@<version>` so Phi is available there too.
+  {
+    const remoteServerPackage = yield* stageExowattRemoteServerPackage({
+      serverDistDir: distDirs.serverDist,
+      stageResourcesDir,
+      version: appVersion,
+      dependencies: resolvedServerDependencies,
+      overrides: resolvedOverrides,
+    });
+    yield* Effect.log(
+      `[desktop-artifact] Staged P3 remote server package ${remoteServerPackage.archiveName} (${String(remoteServerPackage.bytes)} bytes, sha256 ${remoteServerPackage.sha256}).`,
+    );
+    // Also publish it next to the DMG so the release workflow can attach it.
+    yield* fs.makeDirectory(options.outputDir, { recursive: true });
+    yield* fs.copyFile(
+      remoteServerPackage.archivePath,
+      path.join(options.outputDir, remoteServerPackage.archiveName),
+    );
+    yield* fs.copyFile(
+      `${remoteServerPackage.archivePath}.sha256`,
+      path.join(options.outputDir, `${remoteServerPackage.archiveName}.sha256`),
+    );
+  }
 
   yield* assertPlatformBuildResources(
     options.platform,
@@ -3862,6 +3899,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     options.platform === "win"
       ? path.join(stageAppDir, WINDOWS_SERVER_RESOURCE_SOURCE_DIR, WINDOWS_SERVER_ASAR_RESOURCE)
       : undefined;
+  const dmgOnly = yield* Config.Boolean("T3CODE_DESKTOP_DMG_ONLY").pipe(Config.withDefault(false));
   const stagePackageJson: StagePackageJson = {
     name: "t3code",
     version: appVersion,
@@ -3871,11 +3909,11 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     ...(macWebAuthn ? { t3codeWebAuthn: macWebAuthn } : {}),
     private: true,
     packageManager: rootPackageJson.packageManager,
-    description:
-      "T3 Code is an open-source desktop app for coding agents. Work with your existing agent subscriptions, review code changes, and run commands in your projects. Connect from desktop, web, or mobile to continue working remotely.",
+    description: "P3 Code desktop build",
     license: "MIT",
-    homepage: "https://t3.codes",
-    author: "T3 Tools",
+    // Required by the .deb control file.
+    homepage: "https://github.com/exowatt-oss/p3code",
+    author: "Exowatt, Inc.",
     main: "apps/desktop/dist-electron/boot.cjs",
     build: yield* createBuildConfig(
       options.platform,
@@ -3892,6 +3930,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
         : undefined,
       bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime }),
       options.arch,
+      dmgOnly,
     ),
     dependencies: stageDependencies,
     devDependencies: {
@@ -4192,7 +4231,7 @@ const buildDesktopArtifactCli = Command.make("build-desktop-artifact", {
     Flag.optional,
   ),
 }).pipe(
-  Command.withDescription("Build a desktop artifact for T3 Code."),
+  Command.withDescription("Build a desktop artifact for P3 Code."),
   Command.withHandler((input) => Effect.flatMap(resolveBuildOptions(input), buildDesktopArtifact)),
 );
 

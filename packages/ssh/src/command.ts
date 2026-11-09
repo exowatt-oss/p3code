@@ -37,7 +37,8 @@ export interface SshCommandResult {
 export interface RunSshCommandOptions extends SshAuthOptions {
   readonly preHostArgs?: ReadonlyArray<string>;
   readonly remoteCommandArgs?: ReadonlyArray<string>;
-  readonly stdin?: string;
+  // Exowatt: binary stdin lets the desktop stream its server tarball to a remote.
+  readonly stdin?: string | Uint8Array;
   readonly timeoutMs?: number;
   /** Keep the end of long failed-command stdout, where the final cause usually is. */
   readonly keepErrorOutputTail?: boolean;
@@ -112,7 +113,7 @@ export function baseSshArgs(
     "-o",
     `BatchMode=${input?.batchMode ?? "no"}`,
     "-o",
-    "ConnectTimeout=10",
+    "ConnectTimeout=20",
     ...(target.port !== null ? ["-p", String(target.port)] : []),
   ];
 }
@@ -170,8 +171,9 @@ export function sshTargetLogFields(target: DesktopSshEnvironmentTarget) {
   };
 }
 
-function stdinStream(input: string | undefined) {
-  return input === undefined ? Stream.empty : Stream.make(encoder.encode(input));
+function stdinStream(input: string | Uint8Array | undefined) {
+  if (input === undefined) return Stream.empty;
+  return Stream.make(typeof input === "string" ? encoder.encode(input) : input);
 }
 
 const runSshCommandInScope = Effect.fn("ssh/command.runSshCommand.inScope")(function* (

@@ -19,6 +19,7 @@ export type ThreadActionMenuId =
   | "unsnooze"
   | "rename"
   | "regenerate-title"
+  | "restart-session"
   | "mark-unread"
   | "share-guest"
   | "copy"
@@ -81,6 +82,8 @@ export interface ThreadActionMenuState {
   readonly isSnoozed: boolean;
   readonly canSnoozeNow: boolean;
   readonly isRegeneratingTitle: boolean;
+  /** Null until the thread detail has loaded; sidebar shells do not include sessions. */
+  readonly canRestartSession: boolean | null;
   /** Archive rejects attached providers, so disable it while running. */
   readonly isRunning: boolean;
   readonly supports: {
@@ -177,6 +180,18 @@ export function buildThreadActionMenuItems(
           },
         ]
       : []),
+    {
+      id: "restart-session",
+      label:
+        state.canRestartSession === null
+          ? "Restart session (session status unavailable)"
+          : state.canRestartSession
+            ? "Restart session"
+            : "Restart session (no session running; next message starts fresh)",
+      icon: "refresh-cw",
+      disabled: state.canRestartSession !== true,
+      separatorBefore: true,
+    },
     { id: "mark-unread", label: "Mark unread", icon: "mail-open" },
     ...(state.canShareWithGuest
       ? [{ id: "share-guest" as const, label: "Share with guest", icon: "user-plus" }]

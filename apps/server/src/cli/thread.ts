@@ -1,10 +1,12 @@
 import {
+  ModelSelection,
   OrchestratorMcpFailure,
   OrchestratorMcpThreadListResult,
   OrchestratorMcpThreadReadResult,
   OrchestratorMcpThreadSendResult,
   OrchestratorMcpThreadWaitResult,
   ProjectId,
+  ProviderInstanceId,
   RunId,
   ThreadId,
   TrimmedNonEmptyString,
@@ -47,7 +49,7 @@ export class ThreadServerNotRunningError extends Schema.TaggedError<ThreadServer
 ) {
   override readonly [Runtime.errorReported] = false;
   override get message(): string {
-    return `No running T3 Code server uses ${this.baseDir}. Start T3 Code, then retry.`;
+    return `No running P3 Code server uses ${this.baseDir}. Start P3 Code, then retry.`;
   }
 }
 
@@ -58,7 +60,7 @@ export class ThreadServerUnreachableError extends Schema.TaggedError<ThreadServe
   override readonly [Runtime.errorReported] = false;
   override get message(): string {
     const reason = this.cause instanceof Error ? ` ${this.cause.message}` : "";
-    return `Could not reach the T3 Code server at ${this.origin}.${reason}`;
+    return `Could not reach the P3 Code server at ${this.origin}.${reason}`;
   }
 }
 
@@ -87,7 +89,7 @@ export class ThreadProjectNotFoundError extends Schema.TaggedError<ThreadProject
 ) {
   override readonly [Runtime.errorReported] = false;
   override get message(): string {
-    return `No T3 Code project matches '${this.identifier}'. Pass a project id or a path inside a project.`;
+    return `No P3 Code project matches '${this.identifier}'. Pass a project id or a path inside a project.`;
   }
 }
 
@@ -100,7 +102,7 @@ export class ThreadNeedsInputError extends Schema.TaggedError<ThreadNeedsInputEr
   override readonly [Runtime.errorExitCode] = 2;
 
   override get message(): string {
-    return `Thread ${this.threadId} is waiting for an answer. Open it in T3 Code to respond.`;
+    return `Thread ${this.threadId} is waiting for an answer. Open it in P3 Code to respond.`;
   }
 }
 
@@ -153,7 +155,13 @@ const decodeToolResult = Schema.decodeUnknownEffect(ToolResult);
 
 const ProjectListResult = Schema.Struct({
   projects: Schema.Array(
-    Schema.Struct({ id: ProjectId, title: Schema.String, workspaceRoot: Schema.String }),
+    Schema.Struct({
+      id: ProjectId,
+      title: Schema.String,
+      workspaceRoot: Schema.String,
+      // exowatt: --thinking-level alone overrides the project's default model.
+      defaultModelSelection: Schema.optional(Schema.NullOr(ModelSelection)),
+    }),
   ),
   nextCursor: Schema.NullOr(Schema.Int),
 });
@@ -205,7 +213,10 @@ export type ThreadTools = ReturnType<typeof makeThreadTools>;
  */
 const withThreadTools = Effect.fn("cli.thread.withThreadTools")(function* <A, E, R>(
   flags: { readonly baseDir: Option.Option<string> },
-  run: (tools: ThreadTools) => Effect.Effect<A, E, R>,
+  run: (
+    tools: ThreadTools,
+    paths: { readonly providerStatusCacheDir: string },
+  ) => Effect.Effect<A, E, R>,
 ) {
   const logLevel = yield* GlobalFlag.LogLevel;
   const config = yield* resolveCliAuthConfig(flags, logLevel);
@@ -233,7 +244,9 @@ const withThreadTools = Effect.fn("cli.thread.withThreadTools")(function* <A, E,
       authorization: `Bearer ${issued.token}`,
       clientName: "t3-thread-cli",
     }).pipe(Effect.mapError((cause) => new ThreadServerUnreachableError({ origin, cause })));
-    return yield* run(makeThreadTools(session, origin));
+    return yield* run(makeThreadTools(session, origin), {
+      providerStatusCacheDir: config.providerStatusCacheDir,
+    });
   }).pipe(
     Effect.scoped,
     Effect.provide(
@@ -308,6 +321,115 @@ const resolveProject = Effect.fn("cli.thread.resolveProject")(function* (
   }
   return containing.project;
 });
+
+// exowatt: Phi's reasoning effort, sent as the `thinkingLevel` model option.
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+type ThinkingLevel = (typeof THINKING_LEVELS)[number];
+
+const ProviderCacheFile = Schema.fromJsonString(
+  Schema.Struct({
+    instanceId: Schema.optional(Schema.String),
+    driver: Schema.optional(Schema.String),
+    enabled: Schema.optional(Schema.Boolean),
+    installed: Schema.optional(Schema.Boolean),
+    models: Schema.optional(
+      Schema.Array(
+        Schema.Struct({
+          slug: Schema.optional(Schema.String),
+          capabilities: Schema.optional(
+            Schema.NullOr(
+              Schema.Struct({
+                optionDescriptors: Schema.optional(
+                  Schema.Array(
+                    Schema.Struct({
+                      id: Schema.optional(Schema.String),
+                      options: Schema.optional(
+                        Schema.Array(Schema.Struct({ id: Schema.optional(Schema.String) })),
+                      ),
+                    }),
+                  ),
+                ),
+              }),
+            ),
+          ),
+        }),
+      ),
+    ),
+  }),
+);
+const decodeProviderCacheFile = Schema.decodeUnknownEffect(ProviderCacheFile);
+const isProviderInstanceId = Schema.is(ProviderInstanceId);
+
+/**
+ * exowatt: the selection for `--thinking-level`, checked against the running installation's
+ * provider cache before anything is created. Without `--provider`/`--model` it overrides the
+ * project's default model.
+ */
+export const resolveThreadCliModelSelection = Effect.fn("cli.thread.resolveModelSelection")(
+  function* (input: {
+    readonly cacheDir: string;
+    readonly projectDefault: ModelSelection | null | undefined;
+    readonly instanceId?: string;
+    readonly model?: string;
+    readonly thinkingLevel: ThinkingLevel;
+  }) {
+    const instanceId = input.instanceId ?? input.projectDefault?.instanceId;
+    const model = input.model ?? input.projectDefault?.model;
+    if (!instanceId || !model) {
+      return yield* new ThreadUsageError({
+        detail: "The project has no default model; pass --provider and --model.",
+      });
+    }
+    if (!isProviderInstanceId(instanceId)) {
+      return yield* new ThreadUsageError({
+        detail: `Invalid provider instance id '${instanceId}'.`,
+      });
+    }
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const cache = yield* fileSystem
+      .readFileString(path.join(input.cacheDir, `${instanceId}.json`))
+      .pipe(
+        Effect.flatMap(decodeProviderCacheFile),
+        Effect.mapError(
+          () =>
+            new ThreadUsageError({
+              detail: `Provider instance '${instanceId}' is unavailable or has no model cache.`,
+            }),
+        ),
+      );
+    if (cache.instanceId !== instanceId || cache.enabled === false || cache.installed === false) {
+      return yield* new ThreadUsageError({
+        detail: `Provider instance '${instanceId}' is not ready.`,
+      });
+    }
+    const descriptor = cache.models?.find((candidate) => candidate.slug === model);
+    if (descriptor === undefined) {
+      return yield* new ThreadUsageError({
+        detail: `Model '${model}' is not available on provider instance '${instanceId}'.`,
+      });
+    }
+    const supported = descriptor.capabilities?.optionDescriptors
+      ?.find((candidate) => candidate.id === "thinkingLevel")
+      ?.options?.flatMap((candidate) => (candidate.id ? [candidate.id] : []));
+    // Phi's "default" model follows Pi's own setting, so every level is accepted.
+    const phiDefault = cache.driver === "phi" && model === "default";
+    if (!phiDefault && !supported?.includes(input.thinkingLevel)) {
+      return yield* new ThreadUsageError({
+        detail: `Model '${model}' does not support thinking level '${input.thinkingLevel}'.`,
+      });
+    }
+    const inherited =
+      input.projectDefault?.instanceId === instanceId && input.projectDefault.model === model
+        ? (input.projectDefault.options ?? []).filter((option) => option.id !== "thinkingLevel")
+        : [];
+    return {
+      instanceId: ProviderInstanceId.make(instanceId),
+      model,
+      options: [...inherited, { id: "thinkingLevel", value: input.thinkingLevel }],
+    } satisfies ModelSelection;
+  },
+);
 
 /** Every item on a timeline view, oldest first. */
 const readTimeline = Effect.fn("cli.thread.readTimeline")(function* (
@@ -523,11 +645,34 @@ export const titleFromMessage = (message: string) => {
   return `${firstLine.slice(0, end).trimEnd()}…`;
 };
 
-const launchWorkspaceStrategy = (input: {
+const launchWorkspaceStrategy = Effect.fn("cli.thread.launchWorkspaceStrategy")(function* (input: {
   readonly worktree: Option.Option<string>;
   readonly branch: Option.Option<string>;
-}) =>
-  Option.match(input.worktree, {
+  readonly existingWorktree: Option.Option<string>;
+}) {
+  // exowatt: --existing-worktree binds a checkout that already exists (P3's old --worktree <path>).
+  if (Option.isSome(input.existingWorktree)) {
+    if (Option.isSome(input.worktree) || Option.isSome(input.branch)) {
+      return yield* new ThreadUsageError({
+        detail: "--existing-worktree cannot be combined with --worktree or --branch.",
+      });
+    }
+    const path = yield* Path.Path;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const resolved = path.resolve(
+      yield* HostProcess.WorkingDirectory,
+      input.existingWorktree.value,
+    );
+    const worktreePath = yield* fileSystem
+      .realPath(resolved)
+      .pipe(
+        Effect.mapError(
+          () => new ThreadUsageError({ detail: `--existing-worktree ${resolved} does not exist.` }),
+        ),
+      );
+    return { type: "existing_worktree" as const, worktreePath };
+  }
+  return yield* Option.match(input.worktree, {
     onNone: () =>
       Option.isSome(input.branch)
         ? Effect.fail(new ThreadUsageError({ detail: "--branch needs --worktree <base-ref>." }))
@@ -539,6 +684,7 @@ const launchWorkspaceStrategy = (input: {
         ...Option.match(input.branch, { onNone: () => ({}), onSome: (branch) => ({ branch }) }),
       }),
   });
+});
 
 const jsonFlag = Flag.Boolean("json").pipe(
   Flag.withDescription("Print JSON instead of text."),
@@ -609,6 +755,8 @@ const threadStartCommand = Command.make("start", {
     Flag.optional,
   ),
   provider: Flag.String("provider").pipe(
+    // exowatt: --instance is P3's original name for this flag.
+    Flag.withAlias("instance"),
     Flag.withDescription("Provider instance id. Pass with --model."),
     Flag.optional,
   ),
@@ -624,6 +772,16 @@ const threadStartCommand = Command.make("start", {
   ),
   branch: Flag.String("branch").pipe(
     Flag.withDescription("Branch name for the new worktree."),
+    Flag.optional,
+  ),
+  existingWorktree: Flag.String("existing-worktree").pipe(
+    Flag.withDescription("Run in this existing checkout of the project instead of its folder."),
+    Flag.optional,
+  ),
+  thinkingLevel: Flag.Literals("thinking-level", THINKING_LEVELS).pipe(
+    Flag.withDescription(
+      "Reasoning effort. Without --model, overrides the project's default model.",
+    ),
     Flag.optional,
   ),
   wait: waitFlag,
@@ -642,8 +800,19 @@ const threadStartCommand = Command.make("start", {
       ).pipe(Effect.mapError(() => new ThreadUsageError({ detail: "The title is empty." })));
       yield* withThreadTools(
         flags,
-        Effect.fn("cli.thread.start")(function* (tools) {
+        Effect.fn("cli.thread.start")(function* (tools, paths) {
           const project = yield* resolveProject(tools, flags.project);
+          const modelSelection = Option.isSome(flags.thinkingLevel)
+            ? yield* resolveThreadCliModelSelection({
+                cacheDir: paths.providerStatusCacheDir,
+                projectDefault: project.defaultModelSelection,
+                ...(Option.isSome(flags.provider) ? { instanceId: flags.provider.value } : {}),
+                ...(Option.isSome(flags.model) ? { model: flags.model.value } : {}),
+                thinkingLevel: flags.thinkingLevel.value,
+              })
+            : Option.isSome(flags.provider) && Option.isSome(flags.model)
+              ? { instanceId: flags.provider.value, model: flags.model.value }
+              : undefined;
           const launched = yield* tools.call(
             "t3_thread_launch",
             {
@@ -651,14 +820,7 @@ const threadStartCommand = Command.make("start", {
               title,
               message,
               ...(workspaceStrategy === undefined ? {} : { workspaceStrategy }),
-              ...(Option.isSome(flags.provider) && Option.isSome(flags.model)
-                ? {
-                    modelSelection: {
-                      instanceId: flags.provider.value,
-                      model: flags.model.value,
-                    },
-                  }
-                : {}),
+              ...(modelSelection === undefined ? {} : { modelSelection }),
             },
             ThreadLaunchResult,
           );

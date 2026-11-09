@@ -6,6 +6,7 @@ import { NodeHttpServer } from "@effect/platform-node";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
+  AuthSessionId,
   DeviceId,
   DeviceOperationError,
   EnvironmentId,
@@ -576,6 +577,83 @@ it.effect("checks each preview_act action against that action's own input", () =
   ).pipe(Effect.provide(layerTest)),
 );
 
+it.effect(
+  "refuses a linked environment's session outside its allowlist before handlers run",
+  () => {
+    const ran: Array<string> = [];
+    const probe = (name: string) =>
+      Tool.make(name, {
+        description: "Records that it ran.",
+        parameters: Schema.Struct({ threadId: Schema.optional(Schema.String) }),
+        success: Schema.Struct({ ok: Schema.Boolean }),
+        failure: OrchestratorMcpFailure,
+        failureMode: "return",
+      });
+    const GateToolkit = Toolkit.make(
+      probe("settings_update"),
+      probe("thread_delete"),
+      probe("thread_status"),
+    );
+    const record = (name: string) =>
+      McpToolAccess.reads(() => Effect.sync(() => ran.push(name)).pipe(Effect.as({ ok: true })));
+    const layer = McpHttpServer.toolkitRegistration(
+      GateToolkit,
+      McpToolAccess.toLayer(GateToolkit, {
+        settings_update: record("settings_update"),
+        thread_delete: record("thread_delete"),
+        thread_status: record("thread_status"),
+      }),
+    ).pipe(Layer.provideMerge(McpHttpServer.layerInProcessMcpServer));
+    const peer: McpInvocationContext.McpInvocationScope = {
+      environmentId,
+      requestNamespace: "environment-session:session-peer",
+      thread: undefined,
+      client: undefined,
+      capabilities: new Set(["command-center"]),
+      issuedAt: 1,
+      environmentSession: {
+        sessionId: AuthSessionId.make("session-peer"),
+        subject: "p3-peer",
+        peer: true,
+      },
+    };
+    const agent: McpInvocationContext.McpInvocationScope = {
+      ...peer,
+      environmentSession: { sessionId: AuthSessionId.make("session-agent"), subject: "agent" },
+    };
+    return Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      const call = (
+        scope: McpInvocationContext.McpInvocationScope,
+        name: string,
+        args: Record<string, unknown> = {},
+      ) =>
+        server
+          .callTool({ name, arguments: args })
+          .pipe(
+            Effect.provideService(McpInvocationContext.McpInvocationContext, scope),
+            Effect.provideService(McpSchema.McpServerClient, client),
+          );
+      for (const name of ["settings_update", "thread_delete"]) {
+        const refused = yield* call(peer, name);
+        expect(refused.isError).toBe(true);
+        expect(refused.content).toEqual([
+          { type: "text", text: expect.stringContaining("not available to a linked environment") },
+        ]);
+      }
+      expect((yield* call(peer, "thread_status")).isError).toBe(false);
+      const misdirected = yield* call(agent, "thread_delete", {
+        threadId: "thread-1",
+        environmentId: "environment-devbox",
+      });
+      expect(misdirected.content).toEqual([
+        { type: "text", text: expect.stringContaining("does not take environmentId") },
+      ]);
+      expect(ran).toEqual(["thread_status"]);
+    }).pipe(Effect.provide(layer));
+  },
+);
+
 it.effect("decodes null optional arguments the way it decodes omitted ones", () => {
   const calls: Array<unknown> = [];
   return Effect.gen(function* () {
@@ -924,6 +1002,12 @@ it.effect("admits provider and OAuth client credentials and points only clients 
     Effect.gen(function* () {
       const providerToken = "providerTokenWithoutDots";
       const clientToken = "client-payload.client-signature";
+      const peerToken = "peer-payload.peer-signature";
+      const reversePeerToken = "reverse-peer-payload.reverse-peer-signature";
+      const settings = Context.get(
+        yield* Layer.build(ServerSettings.layerTest({ exowattPeerInbound: "full-access" })),
+        ServerSettings.ServerSettingsService,
+      );
       const providerScope: McpInvocationContext.McpInvocationScope = {
         environmentId,
         requestNamespace: "provider-session",
@@ -967,7 +1051,6 @@ it.effect("admits provider and OAuth client credentials and points only clients 
           }),
         ),
       ).pipe(
-        Layer.provide(ServerSettings.layerTest()),
         Layer.provide(
           Layer.mock(McpSessionRegistry.McpSessionRegistry)({
             resolve: (token) =>
@@ -986,6 +1069,40 @@ it.effect("admits provider and OAuth client credentials and points only clients 
               ),
           }),
         ),
+        // A linked environment's session: refused everywhere but `/mcp`. `peerToken` is a
+        // forward session (minted by this server on an environment it already trusts);
+        // `reversePeerToken` is a reverse session (stored by this server for its primary) and is
+        // the only one bounded by this server's own inbound setting.
+        Layer.provide(
+          Layer.mock(EnvironmentAuth.EnvironmentAuth)({
+            authenticateHttpRequest: () =>
+              Effect.fail(new EnvironmentAuth.ServerAuthPeerSessionMcpOnlyError({})),
+            authenticateMcpHttpRequest: (request) =>
+              request.headers.authorization === `Bearer ${peerToken}`
+                ? Effect.succeed({
+                    sessionId: AuthSessionId.make("session-peer"),
+                    subject: "p3-peer",
+                    method: "bearer-access-token",
+                    scopes: ["orchestration:read", "orchestration:operate"],
+                    clientLabel: "p3-peer:Mac (environment-mac)",
+                  })
+                : request.headers.authorization === `Bearer ${reversePeerToken}`
+                  ? Effect.succeed({
+                      sessionId: AuthSessionId.make("session-reverse-peer"),
+                      subject: "p3-peer",
+                      method: "bearer-access-token",
+                      scopes: ["orchestration:read", "orchestration:operate"],
+                      clientLabel: "p3-peer:reverse Mac (environment-mac)",
+                    })
+                  : Effect.fail(new EnvironmentAuth.ServerAuthInvalidCredentialError({})),
+          }),
+        ),
+        Layer.provide(
+          Layer.mock(ServerEnvironment.ServerEnvironment)({
+            getEnvironmentId: Effect.succeed(environmentId),
+          }),
+        ),
+        Layer.provide(Layer.succeed(ServerSettings.ServerSettingsService, settings)),
       );
       const traced = recordSpans();
       yield* HttpRouter.serve(serverLayer, { disableListenLog: true, disableLogger: true }).pipe(
@@ -1041,6 +1158,33 @@ it.effect("admits provider and OAuth client credentials and points only clients 
         "provider-session",
         "client:session-1",
       ]);
+      const peerCall = yield* call(peerToken);
+      expect(peerCall.status).toBe(200);
+      expect(yield* peerCall.text).toContain("probe is not available to a linked environment");
+      expect(seen).toHaveLength(2);
+
+      const reversePeerCall = yield* call(reversePeerToken);
+      expect(reversePeerCall.status).toBe(200);
+      expect(yield* reversePeerCall.text).toContain(
+        "probe is not available to a linked environment",
+      );
+      expect(seen).toHaveLength(2);
+
+      // This server's own inbound setting gates only the *reverse* session before any tool
+      // runs; the forward session (minted on an environment this server already trusts) is
+      // admitted exactly as before reverse links existed, with no config change required.
+      yield* settings.updateSettings({ exowattPeerInbound: "off" });
+      const inboundOffForward = yield* call(peerToken);
+      expect(inboundOffForward.status).toBe(200);
+      expect(yield* inboundOffForward.text).toContain(
+        "probe is not available to a linked environment",
+      );
+      expect(seen).toHaveLength(2);
+
+      const inboundOffReverse = yield* call(reversePeerToken);
+      expect(inboundOffReverse.status).toBe(403);
+      expect(yield* inboundOffReverse.json).toMatchObject({ error: "peer_inbound_off" });
+      expect(seen).toHaveLength(2);
 
       const missing = yield* call(undefined);
       expect(missing.status).toBe(401);

@@ -114,6 +114,11 @@ position, so using **Un-settle** returns it to the top. Pinning and snoozing pre
 position until you move it again. Thread activity does not change the order. The settled shelf
 continues to use settlement time.
 
+In P3, the sliders button in the sidebar header sorts **Active** by last activity (the default),
+creation date, name, or status, or keeps the manual arrangement above. Under **Direction**, flip
+the order, for example to put your oldest threads at the top. Pinned threads stay first either way.
+**Settings → Customize** has the same choices.
+
 If dragging is unavailable for one environment, update the T3 Code server running in that
 environment. Pinned and active reordering require server support. Threads from older servers keep
 their default order until the server is updated.
@@ -233,14 +238,20 @@ the matching message; on an iPad with a keyboard, `Cmd+K` opens the same
 palette.
 
 Use **Settings → Keybindings** to find or customize shortcuts for searching files
-and copying a thread reference. A copied reference uses the thread's pull request
-link when available, otherwise a link to the thread, which opens it from anywhere
-you paste it and pastes into a composer as a thread chip (see
-[sharing a thread](./prompt-links.md#share-a-thread)). To copy the thread even
-when it has a PR, choose **Copy → Thread** from its context menu, or **Copy
-thread** from its long-press menu on mobile.
-**Thread ID** copies the bare ID for scripts and the `t3` CLI. See
-[keybindings](./keybindings.md) for custom configuration.
+and copying a thread reference. A copied reference is a Markdown link such as
+`[Fix the login](p3://thread/<thread-id>)`. Clicking that link in P3 opens the
+thread in the current window, switching to its project and connected environment
+when needed, and pasting it into a composer adds a thread chip (see
+[sharing a thread](./prompt-links.md#share-a-thread)). Local P3 web URLs such as
+`http://127.0.0.1:3773/<environment-id>/<thread-id>` work the same way.
+**Thread ID** in a thread's **Copy** menu copies the bare ID for scripts and the
+`t3` CLI. See [keybindings](./keybindings.md) for custom configuration.
+
+## Navigate between thread views
+
+Browser back and forward navigate the thread and pane views you visited. Use
+mouse buttons 3 and 4, or the desktop app's browser back/forward commands. The
+same history is used when you move between projects or environments.
 
 ## Inspect agent work
 

@@ -1,6 +1,7 @@
 import type {
   BranchNamingOptions,
   ChatAttachment,
+  ExowattThreadIconName,
   ModelSelection,
   PullRequestReviewGuide,
   TextGenerationError,
@@ -107,6 +108,19 @@ export interface TranscriptionPostProcessingResult {
   transcription: string;
 }
 
+// exowatt: a Font Awesome icon for a thread (`exowattThreadIconPrompt.ts`).
+export interface ThreadIconGenerationInput {
+  cwd: string;
+  title: string;
+  /** Opening request or task prompt, for when the title alone is ambiguous. */
+  context?: string | undefined;
+  modelSelection: ModelSelection;
+}
+
+export interface ThreadIconGenerationResult {
+  icon: ExowattThreadIconName;
+}
+
 export interface ProviderTextGeneration {
   readonly generateTranscriptionPostProcessing: (
     input: TranscriptionPostProcessingInput,
@@ -131,4 +145,13 @@ export interface ProviderTextGeneration {
   readonly generateReviewGuide: (
     input: ReviewGuideGenerationInput,
   ) => Effect.Effect<ReviewGuideGenerationResult, TextGenerationError>;
+
+  /**
+   * exowatt: pick a thread's Font Awesome icon. Optional so providers (and
+   * test doubles) without it keep compiling; callers fall back to the
+   * keyword pick in `fallbackExowattThreadIcon`.
+   */
+  readonly generateThreadIcon?: (
+    input: ThreadIconGenerationInput,
+  ) => Effect.Effect<ThreadIconGenerationResult, TextGenerationError>;
 }

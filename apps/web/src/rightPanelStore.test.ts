@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from "vite-plus/test";
 import { useClosedViewStore } from "./closedViewStore";
 import { reopenClosedView } from "./reopenClosedView";
 import {
+  DEFAULT_OPEN_HUB_BY_DEFAULT,
   hostRightPanel,
   migratePersistedRightPanelState,
   pullRequestSurface,
@@ -689,6 +690,28 @@ describe("rightPanelStore", () => {
     });
   });
 
+  // exowatt: P3's v14 Hub tabs and explicit preference survive v15.
+  it.each([true, false])("keeps P3's hub surface and openHubByDefault=%s", (openHubByDefault) => {
+    const panelState = {
+      isOpen: true,
+      activeSurfaceId: "hub",
+      surfaces: [
+        { id: "hub", kind: "hub" },
+        { id: "diff", kind: "diff" },
+      ],
+    };
+    expect(
+      migratePersistedRightPanelState({
+        byThreadKey: { "env-1:thread-A": panelState },
+        openHubByDefault,
+      }),
+    ).toEqual({
+      byThreadKey: { "env-1:thread-A": panelState },
+      threadPanelVisibilityByThreadKey: {},
+      openHubByDefault,
+    });
+  });
+
   it("persists inline preference without restoring an open popover", () => {
     expect(
       migratePersistedRightPanelState({
@@ -1237,5 +1260,64 @@ describe("rightPanelStore", () => {
     store.reconcileBrowserSurfaces(refA, ["tab-a", "tab-b"]);
     expect(surfaceIds()).toEqual(["browser:tab-a", "terminal:term-1", "diff", "browser:tab-b"]);
     expect(store.getUserActionRevision(refA)).toBe(revision);
+  });
+});
+
+// exowatt: P3's Hub surface.
+describe("hub surface", () => {
+  beforeEach(() => {
+    useRightPanelStore.setState({ openHubByDefault: DEFAULT_OPEN_HUB_BY_DEFAULT });
+  });
+
+  it("opens and toggles as a singleton tab", () => {
+    const store = useRightPanelStore.getState();
+    store.open(refA, "hub");
+    store.open(refA, "hub");
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual({
+      isOpen: true,
+      activeSurfaceId: "hub",
+      surfaces: [{ id: "hub", kind: "hub" }],
+    });
+    store.toggle(refA, "hub");
+    expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refA)).toBeNull();
+    store.toggle(refA, "hub");
+    expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refA)).toBe("hub");
+  });
+
+  it("defaults new threads to the Hub collapsed", () => {
+    expect(DEFAULT_OPEN_HUB_BY_DEFAULT).toBe(false);
+    const store = useRightPanelStore.getState();
+    store.openDefaultSurface(refA);
+    expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refA)).toBeNull();
+    expect(useRightPanelStore.getState().byThreadKey).toEqual({});
+  });
+
+  it.each([true, false])("persists the openHubByDefault preference=%s", async (value) => {
+    useRightPanelStore.getState().setOpenHubByDefault(value);
+    const options = useRightPanelStore.persist.getOptions();
+    const persisted = await options.storage?.getItem("t3code:right-panel-state:v2");
+    expect(persisted).toMatchObject({ state: { openHubByDefault: value } });
+  });
+
+  it("opens the Hub by default only for a thread with no panel state or user choice", () => {
+    useRightPanelStore.getState().setOpenHubByDefault(true);
+    const store = useRightPanelStore.getState();
+    store.openDefaultSurface(refA);
+    expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refA)).toBe("hub");
+    // An automatic open is not a user choice: proactive panels still apply.
+    expect(store.getUserActionRevision(refA)).toBe(0);
+
+    store.open(refB, "diff");
+    store.close(refB);
+    store.openDefaultSurface(refB);
+    expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refB)).toBeNull();
+  });
+
+  it("respects the user turning the default off", () => {
+    useRightPanelStore.getState().setOpenHubByDefault(false);
+    useRightPanelStore.getState().openDefaultSurface(refA);
+    expect(selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA)).toEqual(
+      selectThreadRightPanelState({}, refA),
+    );
   });
 });

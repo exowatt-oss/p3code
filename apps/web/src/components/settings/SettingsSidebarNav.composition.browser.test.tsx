@@ -7,7 +7,7 @@ import { SettingsSidebarNav } from "./SettingsSidebarNav";
 
 vi.mock("./useAvailableSettingsSearchItems", () => ({
   useAvailableSettingsSearchItems: () => [
-    { id: "theme", title: "Theme", to: "/settings/appearance" },
+    { id: "theme", title: "Theme", to: "/settings/customize" },
   ],
 }));
 
@@ -39,6 +39,6 @@ it("ignores composing keys in the search", async () => {
 
   await userEvent.keyboard("{Enter}");
   await vi.waitFor(() =>
-    expect(screen.router?.state.location.pathname).toBe("/settings/appearance"),
+    expect(screen.router?.state.location.pathname).toBe("/settings/customize"),
   );
 });

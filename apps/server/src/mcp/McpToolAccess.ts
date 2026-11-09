@@ -1,5 +1,6 @@
 import {
   type EnvironmentId,
+  EXOWATT_THREADS_MCP_CAPABILITY,
   type OrchestrationV2LinkOrigin,
   OrchestratorMcpEnvironmentTarget,
   OrchestratorMcpFailure,
@@ -280,6 +281,29 @@ export const either = <P, A, E, R, A2, E2, R2>(
       ),
   );
 };
+
+/**
+ * exowatt: the P3 toolkits (Threads, Hub, focus, settings, harness, client settings).
+ * Their access rule is the "command-center" capability, which only P3 grants: to `t3 agent
+ * token` environment sessions, and to provider sessions while the user's agent-tool
+ * settings allow it. OAuth clients never hold it. `refuse` builds the toolkit's own error.
+ */
+export const usesCommandCenter = <P, A, E, R, F>(
+  refuse: () => F,
+  handle: (params: P) => Effect.Effect<A, E, R>,
+) =>
+  // Acts here: P3's own `environmentId` forwarding runs inside the handler, not via `routed`.
+  declare(
+    (params: P) =>
+      McpInvocationContext.McpInvocationContext.pipe(
+        Effect.flatMap((scope): Effect.Effect<A, E | F, R> =>
+          scope.capabilities.has(EXOWATT_THREADS_MCP_CAPABILITY)
+            ? handle(params)
+            : Effect.fail(refuse()),
+        ),
+      ),
+    undefined,
+  );
 
 const fullAccessRequired =
   "Changing projects or environment settings needs a live full-access/default calling thread or a full-access client.";

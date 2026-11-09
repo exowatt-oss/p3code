@@ -13,6 +13,7 @@ import {
 import { Check, Copy } from "lucide";
 import { useEffect, useEffectEvent, useRef, useState } from "react";
 
+import { P3PetsHost } from "../components/exowatt-pets/P3PetsHost";
 import { APP_DISPLAY_NAME, APP_VERSION } from "../branding";
 import { AppSidebarLayout } from "../components/AppSidebarLayout";
 import { CommandPalette } from "../components/CommandPalette";
@@ -28,9 +29,14 @@ import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPrompt
 import { SnapShotCoordinator } from "../components/desktop/SnapShotCoordinator";
 import { DesktopAppActivationCoordinator } from "../components/desktop/DesktopAppActivationCoordinator";
 import { DesktopWebLinkCoordinator } from "../components/desktop/DesktopWebLinkCoordinator";
+import { PeerEnvironmentLinkCoordinator } from "../components/desktop/PeerEnvironmentLinkCoordinator";
 import { RunningThreadKeepAlive } from "../components/desktop/RunningThreadKeepAlive";
 import { ReopenClosedViewShortcut } from "../components/ReopenClosedViewShortcut";
 import { ProjectCloneToastCoordinator } from "../components/ProjectCloneToastCoordinator";
+import {
+  ExowattChunkLoadRecovery,
+  isChunkLoadError,
+} from "../components/exowatt/ExowattChunkLoadRecovery";
 import { ChatGptWelcomeCoordinator } from "../components/settings/ChatGptWelcomeCoordinator";
 import { ThemeEditorHost } from "../components/settings/ThemeEditorHost";
 import { useCopyToClipboard } from "../hooks/useCopyToClipboard";
@@ -201,6 +207,7 @@ function RootRouteBranch() {
         {primaryEnvironmentAuthenticated || localEnvironmentDisabled ? (
           <DesktopWebLinkCoordinator />
         ) : null}
+        {isElectron && primaryEnvironmentAuthenticated ? <PeerEnvironmentLinkCoordinator /> : null}
         {isElectron ? <RunningThreadKeepAlive /> : null}
         <RelayClientInstallDialog />
         <ConnectOnboardingDialog />
@@ -219,6 +226,8 @@ function RootRouteBranch() {
         {appShell}
         {/* Keep the theme editor above the router so drafts survive navigation. */}
         <ThemeEditorHost />
+        {/* exowatt: P3 pets float over the app shell. */}
+        <P3PetsHost />
       </FirstRunGate>
     </>
   );
@@ -226,9 +235,13 @@ function RootRouteBranch() {
 
 function RootRouteErrorView({ error }: ErrorComponentProps) {
   const router = useRouter();
-  const message = errorMessage(error);
   // Router pathname rather than window.location: desktop uses hash history, where the window path is always "/".
   const pathname = useLocation({ select: (location) => location.pathname });
+  if (isChunkLoadError(error)) {
+    return <ExowattChunkLoadRecovery />;
+  }
+
+  const message = errorMessage(error);
   const report = errorReport(error, pathname);
 
   return (

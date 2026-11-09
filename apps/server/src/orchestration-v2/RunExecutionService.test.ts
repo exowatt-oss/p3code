@@ -2132,7 +2132,8 @@ it.effect(
               ingestNormalized: (input) =>
                 Ref.update(ingested, (current) => [...current, input.event]).pipe(Effect.as([])),
             }),
-            ServerSettings.layerTest(),
+            // exowatt: P3 defaults to token delivery; this case needs upstream's paragraph buffering.
+            ServerSettings.layerTest({ responseStreamingMode: "paragraph" }),
           ),
         ),
       );

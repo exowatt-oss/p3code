@@ -13,9 +13,9 @@ const defaultInput = {
   platform: "darwin",
   processArch: "arm64",
   appVersion: "0.0.22",
-  appPath: "/Applications/T3 Code.app/Contents/Resources/app.asar",
+  appPath: "/Applications/P3 Code.app/Contents/Resources/app.asar",
   isPackaged: false,
-  resourcesPath: "/Applications/T3 Code.app/Contents/Resources",
+  resourcesPath: "/Applications/P3 Code.app/Contents/Resources",
   runningUnderArm64Translation: false,
 } satisfies DesktopEnvironment.MakeDesktopEnvironmentInput;
 
@@ -38,6 +38,24 @@ const makeEnvironment = (
 ) => DesktopEnvironment.DesktopEnvironment.pipe(Effect.provide(layerEnvironment(overrides, env)));
 
 describe("DesktopEnvironment", () => {
+  // exowatt: the desktop identity is P3 Code in development and production.
+  it.effect("carries the P3 Code identity in development and production", () =>
+    Effect.gen(function* () {
+      const development = yield* makeEnvironment(
+        {},
+        { T3CODE_HOME: "/tmp/t3", VITE_DEV_SERVER_URL: "http://localhost:5173" },
+      );
+      assert.equal(development.branding.baseName, "P3 Code");
+      assert.equal(development.displayName, "P3 Code (Dev)");
+      assert.equal(development.appUserModelId, "com.exowatt.p3code.dev");
+
+      const production = yield* makeEnvironment({}, { T3CODE_HOME: "/tmp/t3" });
+      assert.equal(production.branding.baseName, "P3 Code");
+      assert.equal(production.displayName, "P3 Code (Beta)");
+      assert.equal(production.appUserModelId, "com.exowatt.p3code");
+    }),
+  );
+
   it.effect("uses the packaged Windows server sidecar as the backend root", () =>
     Effect.gen(function* () {
       const environment = yield* makeEnvironment({

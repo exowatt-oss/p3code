@@ -264,6 +264,12 @@ const ComposerPendingUserInputCard = memo(function ComposerPendingUserInputCard(
               threadRef={threadRef}
               className={cn("pt-2 text-foreground/85", questionTextAlign)}
             />
+            {/* exowatt: free-text questions are answered in the composer. */}
+            {activeQuestion.options.length === 0 ? (
+              <p className="mt-1 text-secondary-label text-xs">
+                Type your answer in the composer below.
+              </p>
+            ) : null}
             {/* Rows span the header row's width so the radios align with the question text and the shortcut column sits under the dismiss button. */}
             <div className="-ms-2 mt-1.5 sm:-ms-1.5">
               {activeQuestion.options.map((option, index) => {

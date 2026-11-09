@@ -1,6 +1,7 @@
 import { tokenizeCliArgs } from "@t3tools/shared/cliArgs";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as NodeOS from "node:os";
 
 import type { McpProviderSessionConfig } from "@t3tools/provider-core/server/mcpSession";
 import {
@@ -11,6 +12,17 @@ import {
   T3_PI_RUNTIME_MODE_ENV,
   T3_PI_MCP_EXTENSION_PATH_ENV,
 } from "./mcpExtensionSource.ts";
+
+/** Phi's MCP config path override. */
+export const PHI_MCP_CONFIG_ENV = "PHI_MCP_CONFIG";
+/** Phi's switch for opening a browser for MCP OAuth logins. */
+export const PHI_MCP_BROWSER_AUTH_ENV = "PHI_MCP_BROWSER_AUTH";
+/**
+ * exowatt: helper processes (text generation, discovery, session forks) run without MCP, since
+ * Phi's MCP extension ignores `--no-extensions`. The null device is never a directory, so this
+ * path can never be read and Phi treats the MCP config as absent.
+ */
+export const PHI_HELPER_MCP_CONFIG_PATH = `${NodeOS.devNull}/p3-helper-no-mcp.json`;
 
 const RESERVED_PI_LAUNCH_ARGUMENTS = new Set([
   "--continue",
@@ -258,6 +270,8 @@ export function buildPiRpcLaunch(input: {
   readonly shortLived?: boolean;
   readonly disableExtensions?: boolean;
   readonly disableTools?: boolean;
+  /** Start Phi with no MCP servers and no browser OAuth (helper processes). */
+  readonly disableMcp?: boolean;
   readonly runtimeMode?: "approval-required" | "auto-accept-edits" | "auto" | "full-access";
 }): {
   readonly args: ReadonlyArray<string>;
@@ -305,10 +319,18 @@ export function buildPiRpcLaunch(input: {
       ...(hasT3Extension && input.extensionPath !== undefined
         ? { [T3_PI_MCP_EXTENSION_PATH_ENV]: input.extensionPath }
         : {}),
+      ...(input.disableMcp === true
+        ? {
+            [PHI_MCP_CONFIG_ENV]: PHI_HELPER_MCP_CONFIG_PATH,
+            [PHI_MCP_BROWSER_AUTH_ENV]: "0",
+          }
+        : {}),
       ...(hasT3Extension && input.runtimeMode !== undefined
         ? {
+            // exowatt: Pi has no "auto" mode and resolveRuntimeMode should already map it. A stray
+            // literal "auto" must never collapse to "approval-required" (every tool call would prompt).
             [T3_PI_RUNTIME_MODE_ENV]:
-              input.runtimeMode === "auto" ? "approval-required" : input.runtimeMode,
+              input.runtimeMode === "auto" ? "auto-accept-edits" : input.runtimeMode,
           }
         : {}),
       ...(hasT3Mcp && input.mcpSession !== undefined

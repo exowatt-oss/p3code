@@ -640,6 +640,11 @@ export interface EffectiveComposerModelState {
 interface ComposerDraftModelState {
   activeProvider: ProviderInstanceId | null;
   modelSelectionByProvider: Partial<Record<ProviderInstanceId, ModelSelection>>;
+  // A draft's remembered per-provider model only reflects a genuine user pick
+  // when this is true. Dropping it here let any non-explicit write (a sticky
+  // seed, a rolled-back optimistic update, a future bug) silently become the
+  // model the next send used, overriding the thread's real selection.
+  modelSelectionExplicit?: boolean;
 }
 
 function selectionsByInstance(
@@ -1096,7 +1101,10 @@ function legacyToModelSelectionByProvider(
 
 export function deriveEffectiveComposerModelState(input: {
   draft:
-    | Pick<ComposerThreadDraftState, "modelSelectionByProvider" | "activeProvider">
+    | Pick<
+        ComposerThreadDraftState,
+        "modelSelectionByProvider" | "activeProvider" | "modelSelectionExplicit"
+      >
     | null
     | undefined;
   providers: ReadonlyArray<ServerProvider>;
@@ -1134,13 +1142,19 @@ export function deriveEffectiveComposerModelState(input: {
     ) ??
     normalizeModelSlug(baseModelCandidate, input.selectedProvider) ??
     getDefaultServerModel(input.providers, input.selectedProvider);
-  const instanceSelection = input.selectedInstanceId
-    ? input.draft?.modelSelectionByProvider?.[input.selectedInstanceId]
-    : undefined;
+  // exowatt: a remembered per-provider model overrides the thread's own selection only when it
+  // was explicitly chosen in this draft; otherwise a sticky seed or a rolled-back optimistic
+  // update would silently become the model the next send dispatches with.
+  const draftSelectionIsExplicit = input.draft?.modelSelectionExplicit === true;
+  const instanceSelection =
+    draftSelectionIsExplicit && input.selectedInstanceId
+      ? input.draft?.modelSelectionByProvider?.[input.selectedInstanceId]
+      : undefined;
   // Legacy driver-keyed drafts belong to the default instance.
   const legacySelection =
-    input.selectedInstanceId &&
-    input.selectedInstanceId !== defaultInstanceIdForDriver(input.selectedProvider)
+    !draftSelectionIsExplicit ||
+    (input.selectedInstanceId &&
+      input.selectedInstanceId !== defaultInstanceIdForDriver(input.selectedProvider))
       ? undefined
       : input.draft?.modelSelectionByProvider?.[ProviderInstanceId.make(input.selectedProvider)];
   const activeSelection = instanceSelection ?? legacySelection;
@@ -4310,6 +4324,118 @@ export function subscribeComposerDraftModelReconciliation(input: {
   };
 }
 
+type ComposerModelSnapshot = Pick<
+  ComposerThreadDraftState,
+  "modelSelectionByProvider" | "activeProvider"
+> & { modelSelectionExplicit: boolean | undefined };
+const liveModelTransactions = new Map<
+  string,
+  {
+    confirmed: ComposerModelSnapshot;
+    confirmedRevision: number;
+    lastSticky: ModelSelection | undefined;
+    pending: Set<number>;
+  }
+>();
+let liveModelRevision = 0;
+
+/** Show a live model choice immediately without letting a late RPC undo a newer pick. */
+export function beginOptimisticComposerModelSelection(
+  threadRef: ComposerThreadTarget,
+  modelSelection: ModelSelection,
+): { readonly commit: () => void; readonly rollback: () => void } {
+  const store = useComposerDraftStore.getState();
+  const threadKey = resolveComposerDraftKey(store, threadRef);
+  if (!threadKey) return { commit: () => undefined, rollback: () => undefined };
+
+  const previousDraft = store.draftsByThreadKey[threadKey];
+  const previousModelState = {
+    modelSelectionByProvider: compactModelSelectionByProvider(
+      previousDraft?.modelSelectionByProvider ?? {},
+    ),
+    activeProvider: previousDraft?.activeProvider ?? null,
+    modelSelectionExplicit: previousDraft?.modelSelectionExplicit,
+  };
+  const transactions = liveModelTransactions.get(threadKey) ?? {
+    confirmed: previousModelState,
+    confirmedRevision: 0,
+    lastSticky: store.stickyModelSelectionByProvider[modelSelection.instanceId],
+    pending: new Set<number>(),
+  };
+  liveModelTransactions.set(threadKey, transactions);
+  const revision = ++liveModelRevision;
+  transactions.pending.add(revision);
+  store.setModelSelection(threadRef, modelSelection, { explicit: true, replaceOptions: true });
+  const optimisticDraft = useComposerDraftStore.getState().draftsByThreadKey[threadKey];
+  if (!optimisticDraft) {
+    transactions.pending.delete(revision);
+    if (transactions.pending.size === 0) liveModelTransactions.delete(threadKey);
+    return { commit: () => undefined, rollback: () => undefined };
+  }
+  const optimisticModelState = {
+    modelSelectionByProvider: compactModelSelectionByProvider(
+      optimisticDraft.modelSelectionByProvider,
+    ),
+    activeProvider: optimisticDraft.activeProvider,
+    modelSelectionExplicit: optimisticDraft.modelSelectionExplicit,
+  };
+  const committedModelSelection =
+    optimisticDraft.modelSelectionByProvider[modelSelection.instanceId] ?? modelSelection;
+  const isStillCurrent = (current: ComposerThreadDraftState | undefined) =>
+    current !== undefined &&
+    Equal.equals(current.modelSelectionByProvider, optimisticModelState.modelSelectionByProvider) &&
+    current.activeProvider === optimisticModelState.activeProvider &&
+    current.modelSelectionExplicit === optimisticModelState.modelSelectionExplicit;
+
+  return {
+    commit: () => {
+      if (revision > transactions.confirmedRevision) {
+        transactions.confirmed = optimisticModelState;
+        transactions.confirmedRevision = revision;
+        const currentStore = useComposerDraftStore.getState();
+        // Keep the last confirmed choice sticky even while a newer pick is
+        // pending. Do not overwrite a change committed from another thread.
+        if (
+          isStillCurrent(currentStore.draftsByThreadKey[threadKey]) ||
+          Equal.equals(
+            currentStore.stickyModelSelectionByProvider[modelSelection.instanceId],
+            transactions.lastSticky,
+          )
+        ) {
+          currentStore.setStickyModelSelection(committedModelSelection);
+          transactions.lastSticky = committedModelSelection;
+        }
+      }
+      transactions.pending.delete(revision);
+      if (transactions.pending.size === 0) liveModelTransactions.delete(threadKey);
+    },
+    rollback: () => {
+      useComposerDraftStore.setState((state) => {
+        const current = state.draftsByThreadKey[threadKey];
+        if (current === undefined || !isStillCurrent(current)) return state;
+        const { modelSelectionExplicit: _explicit, ...retained } = current;
+        const confirmed = transactions.confirmed;
+        const restored: ComposerThreadDraftState = {
+          ...retained,
+          modelSelectionByProvider: compactModelSelectionByProvider(
+            confirmed.modelSelectionByProvider,
+          ),
+          activeProvider: confirmed.activeProvider,
+          ...(confirmed.modelSelectionExplicit === undefined
+            ? {}
+            : { modelSelectionExplicit: confirmed.modelSelectionExplicit }),
+        };
+        const draftsByThreadKey = { ...state.draftsByThreadKey };
+        if (shouldRemoveDraft(restored)) delete draftsByThreadKey[threadKey];
+        else draftsByThreadKey[threadKey] = restored;
+        return { draftsByThreadKey };
+      });
+      transactions.pending.delete(revision);
+      if (transactions.pending.size === 0) liveModelTransactions.delete(threadKey);
+    },
+  };
+}
+
 export function beginBackgroundDraftSubmissionByRef(threadRef: ScopedThreadRef): void {
   const threadKey = scopedThreadKey(threadRef);
   useComposerDraftStore.setState((state) => ({
@@ -4412,6 +4538,31 @@ export function useThreadHasUnsentDraft(threadRef: ScopedThreadRef): boolean {
   );
 }
 
+// exowatt: send reads the model from the draft store at send time, so a model
+// picked moments before sending is the one dispatched (see ChatComposer
+// getSendContext).
+export function readEffectiveComposerModelState(input: {
+  threadRef: ComposerThreadTarget;
+  providers: ReadonlyArray<ServerProvider>;
+  selectedProvider: ProviderDriverKind;
+  selectedInstanceId?: ProviderInstanceId | null | undefined;
+  requestedInstanceId?: ProviderInstanceId | null | undefined;
+  threadModelSelection: ModelSelection | null | undefined;
+  projectModelSelection: ModelSelection | null | undefined;
+  settings: UnifiedSettings;
+}): EffectiveComposerModelState {
+  return deriveEffectiveComposerModelState({
+    draft: getComposerDraftState(useComposerDraftStore.getState(), input.threadRef),
+    providers: input.providers,
+    selectedProvider: input.selectedProvider,
+    selectedInstanceId: input.selectedInstanceId,
+    requestedInstanceId: input.requestedInstanceId,
+    threadModelSelection: input.threadModelSelection,
+    projectModelSelection: input.projectModelSelection,
+    settings: input.settings,
+  });
+}
+
 export function useComposerDraftModelState(
   threadRef: ComposerThreadTarget,
 ): ComposerDraftModelState {
@@ -4422,6 +4573,9 @@ export function useComposerDraftModelState(
         ? {
             activeProvider: draft.activeProvider,
             modelSelectionByProvider: draft.modelSelectionByProvider,
+            ...(draft.modelSelectionExplicit === undefined
+              ? {}
+              : { modelSelectionExplicit: draft.modelSelectionExplicit }),
           }
         : EMPTY_COMPOSER_DRAFT_MODEL_STATE;
     }),

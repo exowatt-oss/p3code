@@ -13,6 +13,8 @@ const SETTINGS_BREADCRUMB_LABELS: Readonly<Record<string, string>> = {
 
 function settingsBreadcrumbLabel(pathname: string): string | null {
   const normalizedPathname = pathname.replace(/\/+$/, "") || "/";
+  // exowatt: Customize's sub-pages show their own tab strip under one crumb.
+  if (normalizedPathname.startsWith("/settings/customize/")) return "Customize";
   return SETTINGS_BREADCRUMB_LABELS[normalizedPathname] ?? null;
 }
 

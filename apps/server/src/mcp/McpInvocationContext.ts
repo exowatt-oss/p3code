@@ -1,5 +1,6 @@
 import {
   type AuthMcpClientAccess,
+  type AuthSessionId,
   type EnvironmentId,
   McpCapabilityUnavailableError,
   OrchestratorMcpFailure,
@@ -20,6 +21,10 @@ const ALL_MCP_CAPABILITIES = [
   "worktree",
   "device",
   "pull-requests",
+  // exowatt: the P3 Threads / settings / harness toolkits (EXOWATT_THREADS_MCP_CAPABILITY).
+  "command-center",
+  // exowatt: the experimental thread-signal tools (server setting `exowattThreadSignals`).
+  "thread-signals",
 ] as const;
 export type McpCapability = (typeof ALL_MCP_CAPABILITIES)[number];
 
@@ -131,6 +136,26 @@ export interface McpInvocationScope {
   readonly client: McpClientCaller | undefined;
   /** False while the Linked environments beta is off here; `/mcp` reads it per request. */
   readonly linkedEnvironments?: boolean;
+  /**
+   * exowatt: set when the bearer is an environment auth session (`t3 agent
+   * token`) rather than a provider-session or OAuth MCP-client credential.
+   * Such a caller has no thread and no OAuth client grant; it only holds the
+   * "command-center" capability, so every upstream tool refuses it.
+   */
+  readonly environmentSession?: {
+    readonly sessionId: AuthSessionId;
+    readonly subject: string;
+    /** A linked environment's session (`p3-peer:` label): cross-environment Threads tools only. */
+    readonly peer?: boolean;
+    /**
+     * A *reverse* link's session (`p3-peer:reverse ` label): bounded by this server's own
+     * `exowattPeerInbound` gate. A forward peer session (`gated` unset) runs with no ceiling at
+     * all, exactly as before reverse links existed.
+     */
+    readonly gated?: boolean;
+    /** The receiver's `exowattPeerInbound` ceiling for a reverse (gated) peer session, read per request. */
+    readonly peerCeiling?: RuntimeMode;
+  };
 }
 
 /**
@@ -143,8 +168,15 @@ export const threadLinkFor = (
 ): string => {
   const hostedAppUrl = scope.client?.hostedAppUrl;
   const ref = { environmentId: scope.environmentId, threadId };
-  return hostedAppUrl === undefined ? formatThreadLink(ref) : hostedThreadLink(ref, hostedAppUrl);
+  // exowatt: P3 agents link threads on this environment as `p3://thread/<id>` (env-less form).
+  return hostedAppUrl === undefined
+    ? formatThreadLink({ environmentId: null, threadId })
+    : hostedThreadLink(ref, hostedAppUrl);
 };
+
+/** exowatt: the calling thread, or null for an outside (`t3 agent token` or OAuth) caller. */
+export const callerThreadId = (scope: McpInvocationScope): ThreadId | null =>
+  scope.thread?.threadId ?? null;
 
 export class McpInvocationContext extends Context.Service<
   McpInvocationContext,

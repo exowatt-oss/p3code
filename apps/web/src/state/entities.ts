@@ -325,6 +325,25 @@ export function waitForProjectRemoval(ref: ScopedProjectRef, timeoutMs = 5_000):
   });
 }
 
+export function readLoadedThreadProjection(
+  ref: ScopedThreadRef,
+): EnvironmentThread["projection"] | null {
+  return appAtomRegistry.get(environmentThreadDetails.threadAtom(ref))?.projection ?? null;
+}
+
+export async function loadThreadProjection(
+  ref: ScopedThreadRef,
+): Promise<EnvironmentThread["projection"] | null> {
+  const atom = environmentThreadDetails.threadAtom(ref);
+  await waitForAtomValue({
+    registry: appAtomRegistry,
+    atom,
+    predicate: (thread) => thread !== null,
+    timeoutMs: 4_000,
+  });
+  return appAtomRegistry.get(atom)?.projection ?? null;
+}
+
 export function readThreadShell(ref: ScopedThreadRef): EnvironmentThreadShell | null {
   return appAtomRegistry.get(environmentThreadShells.threadShellAtom(ref));
 }

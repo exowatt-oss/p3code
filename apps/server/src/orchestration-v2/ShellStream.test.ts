@@ -192,6 +192,25 @@ describe("omitIdleSubagentShells", () => {
     ]);
   });
 
+  it("keeps an idle Phi child whose latest hand-back needs the user", () => {
+    const threads = [
+      row("root", null),
+      row("needs-you", "root", {
+        latestWorkspaceState: { endState: "awaiting-human", question: "Merge it?" },
+      }),
+      row("mid-work", "root", {
+        latestWorkspaceState: { endState: "mid-work" },
+      }),
+      row("complete", "root", {
+        latestWorkspaceState: { endState: "complete" },
+      }),
+    ];
+    expect(omitIdleSubagentShells(threads).map((thread) => thread.id)).toEqual([
+      "root",
+      "needs-you",
+    ]);
+  });
+
   it("still filters the transcript events of omitted children for a subscriber that opts in", () => {
     const threads = [row("root", null), row("idle", "root")];
     const omitted = activeShellRowsForSubscriber(threads, true);

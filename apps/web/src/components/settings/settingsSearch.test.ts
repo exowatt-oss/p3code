@@ -109,6 +109,7 @@ describe("searchSettings", () => {
     expect(searchSettings("hold to quit")).toEqual([]);
     expect(searchSettings("wsl")).toEqual([]);
     expect(searchSettings("update track")).toEqual([]);
+    expect(searchSettings("remote health-check timeout")).toEqual([]);
   });
 
   it("hides settings whose controls are unavailable", () => {
@@ -204,6 +205,33 @@ describe("searchSettings", () => {
   it("keeps catalog result ids unique", () => {
     const ids = SETTINGS_SEARCH_ITEMS.map((item) => item.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  // exowatt: Appearance lives in Settings › Customize; P3 hides Guest links; P3's Experimental
+  // switches sit in Labs and its agent tools and feads card on Access.
+  it("routes P3's settings to their pages and hides the rows P3 does not ship", () => {
+    expect(searchSettings("theme")[0]).toMatchObject({ id: "theme", to: "/settings/customize" });
+    expect(searchSettings("render math")[0]).toMatchObject({
+      id: "math-rendering",
+      to: "/settings/customize",
+    });
+    expect(searchSettings("guest links").map((item) => item.id)).not.toContain("guest-links");
+    expect(searchSettings("working section")[0]).toMatchObject({
+      id: "working-shelf",
+      to: "/settings/general",
+    });
+    expect(searchSettings("thread signals")[0]).toMatchObject({
+      id: "exowatt-thread-signals",
+      to: "/settings/labs",
+    });
+    expect(searchSettings("agent p3 tools")[0]).toMatchObject({
+      id: "agent-p3-tools",
+      to: "/settings/access",
+    });
+    expect(searchSettings("feads token")[0]).toMatchObject({
+      id: "feads-token",
+      to: "/settings/access",
+    });
   });
 });
 
@@ -357,12 +385,17 @@ describe("movedSettingsPath", () => {
     expect(movedSettingsPath("/settings/storage", "")).toBe("/settings/maintenance");
     expect(movedSettingsPath("/settings/integrations", "devices")).toBe("/settings/devices");
     expect(movedSettingsPath("/settings/beta", "")).toBe("/settings/labs");
+    // exowatt: Appearance is Customize; P3's Integrations sections moved to Access.
+    expect(movedSettingsPath("/settings/appearance", "theme")).toBe("/settings/customize");
+    expect(movedSettingsPath("/settings/appearance", "")).toBe("/settings/customize");
+    expect(movedSettingsPath("/settings/integrations", "agent-p3-tools")).toBe("/settings/access");
+    expect(movedSettingsPath("/settings/integrations", "feads")).toBe("/settings/access");
   });
 
   it("leaves current pages alone", () => {
     expect(movedSettingsPath("/settings/general", "time-format")).toBeNull();
     expect(movedSettingsPath("/settings/projects", "project-defaults")).toBeNull();
     expect(movedSettingsPath("/settings/connections", "remote-environments")).toBeNull();
-    expect(movedSettingsPath("/settings/appearance", "theme")).toBeNull();
+    expect(movedSettingsPath("/settings/customize", "theme")).toBeNull();
   });
 });

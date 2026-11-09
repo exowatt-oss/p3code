@@ -6,6 +6,7 @@ import { formatGeneratedBranchName, sanitizeFeatureBranchName } from "@t3tools/s
 import { extractJsonObject } from "@t3tools/shared/schemaJson";
 
 import type { ProviderTextGeneration } from "./textGeneration.ts";
+import { buildThreadIconPrompt } from "./exowattThreadIconPrompt.ts";
 import {
   buildBranchNamePrompt,
   buildCommitMessagePrompt,
@@ -180,6 +181,19 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
     });
   });
 
+  // exowatt: a Font Awesome icon for the thread (see exowattThreadIconPrompt.ts).
+  const generateThreadIcon: NonNullable<ProviderTextGeneration["generateThreadIcon"]> = Effect.fn(
+    `${name}.generateThreadIcon`,
+  )(function* (input) {
+    const generated = yield* run({
+      operation: "generateThreadIcon",
+      cwd: input.cwd,
+      modelSelection: input.modelSelection,
+      ...buildThreadIconPrompt(input),
+    });
+    return { icon: generated.icon };
+  });
+
   return {
     generateCommitMessage,
     generatePrContent,
@@ -187,5 +201,6 @@ export function fromRunner(name: string, run: Runner): ProviderTextGeneration {
     generateThreadTitle,
     generateReviewGuide,
     generateTranscriptionPostProcessing,
+    generateThreadIcon,
   } satisfies ProviderTextGeneration;
 }

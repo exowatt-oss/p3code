@@ -61,38 +61,42 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
   // Some browsers keep plain F6 for their own toolbars; mod+F6 reaches the page in all of them.
   { key: "mod+f6", command: "workspace.focusNext" },
   { key: "mod+shift+f6", command: "workspace.focusPrevious" },
-  { key: "mod+[", command: "navigation.back", when: "!terminalFocus" },
-  { key: "mod+]", command: "navigation.forward", when: "!terminalFocus" },
+  { key: "mod+[", command: "navigation.back", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+]", command: "navigation.forward", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
   { key: "mod+j", command: "terminal.toggle" },
   { key: "mod+alt+b", command: "rightPanel.toggle" },
-  { key: "mod+shift+b", command: "threadPanel.toggle", when: "!terminalFocus" },
-  { key: "mod+t", command: "rightPanel.new", when: "rightPanelOpen && !terminalFocus" },
-  { key: "mod+d", command: "terminal.split", when: "terminalFocus" },
-  { key: "mod+shift+d", command: "terminal.splitVertical", when: "terminalFocus" },
-  { key: "mod+shift+d", command: "composer.dictation", when: "!terminalFocus" },
-  { key: "mod+n", command: "terminal.new", when: "terminalFocus" },
-  { key: "mod+w", command: "terminal.close", when: "terminalFocus" },
-  { key: "mod+w", command: "rightPanel.close", when: "!terminalFocus" },
+  { key: "mod+shift+b", command: "threadPanel.toggle", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+t", command: "rightPanel.new", when: "rightPanelOpen && !terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+alt+h", command: "rightPanel.hub", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+d", command: "terminal.split", when: "terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+shift+d", command: "terminal.splitVertical", when: "terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+shift+d", command: "composer.dictation", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+n", command: "terminal.new", when: "terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+w", command: "terminal.close", when: "terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+w", command: "rightPanel.close", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
   { key: "mod+shift+t", command: "view.reopenClosed" },
-  { key: "mod+d", command: "diff.toggle", when: "!terminalFocus" },
+  { key: "mod+d", command: "diff.toggle", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
   { key: "mod+shift+j", command: "preview.toggle" },
-  { key: "mod+r", command: "preview.refresh", when: "previewFocus" },
-  { key: "mod+l", command: "preview.focusUrl", when: "previewFocus" },
-  { key: "mod+=", command: "preview.zoomIn", when: "previewFocus" },
-  { key: "mod++", command: "preview.zoomIn", when: "previewFocus" },
-  { key: "mod+-", command: "preview.zoomOut", when: "previewFocus" },
-  { key: "mod+0", command: "preview.resetZoom", when: "previewFocus" },
-  { key: "mod+k", command: "commandPalette.toggle", when: "!terminalFocus" },
-  { key: "mod+p", command: "filePicker.toggle", when: "!terminalFocus" },
-  { key: "mod+shift+f", command: "projectSearch.toggle", when: "!terminalFocus" },
-  { key: "mod+u", command: "usage.open", when: "!terminalFocus" },
-  { key: "mod+alt+a", command: "theme.select", when: "!terminalFocus" },
-  { key: "mod+alt+shift+a", command: "appearance.cycle", when: "!terminalFocus" },
+  { key: "mod+r", command: "preview.refresh", when: "previewFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+l", command: "preview.focusUrl", when: "previewFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+=", command: "preview.zoomIn", when: "previewFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod++", command: "preview.zoomIn", when: "previewFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+-", command: "preview.zoomOut", when: "previewFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+0", command: "preview.resetZoom", when: "previewFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+k", command: "commandPalette.toggle", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  // Same key as the desktop "Settings..." menu accelerator; keeps every
+  // upstream default (notably mod+shift+p thread.pin) untouched.
+  { key: "mod+,", command: "settings.open", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+p", command: "filePicker.toggle", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+shift+f", command: "projectSearch.toggle", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+u", command: "usage.open", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+alt+a", command: "theme.select", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+alt+shift+a", command: "appearance.cycle", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
   { key: "mod+alt+shift+t", command: "themeEditor.toggle" },
-  { key: "mod+s", command: "composer.stash", when: "!terminalFocus" },
-  { key: "mod+shift+enter", command: "thread.steerQueuedMessage", when: "!terminalFocus" },
-  { key: "alt+arrowup", command: "thread.editQueuedMessage", when: "composerFocus" },
-  { key: "mod+enter", command: "composer.sendAlternate", when: "composerFocus && turnRunning" },
+  { key: "mod+s", command: "composer.stash", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+shift+enter", command: "thread.steerQueuedMessage", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "alt+arrowup", command: "thread.editQueuedMessage", when: "composerFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+enter", command: "composer.sendAlternate", when: "composerFocus && turnRunning" }, // gitleaks:allow (keyboard shortcut, not a credential)
   {
     key: "mod+enter",
     command: "composer.sendBackground",
@@ -108,28 +112,28 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
     command: "composer.sendAndNewThread",
     when: "composerFocus && !draftThreadRoute",
   },
-  { key: "mod+n", command: "chat.new", when: "!terminalFocus" },
-  { key: "mod+shift+o", command: "chat.new", when: "!terminalFocus" },
-  { key: "mod+shift+n", command: "chat.newLocal", when: "!terminalFocus" },
-  { key: "mod+alt+n", command: "chat.newWithoutProject", when: "!terminalFocus" },
-  { key: "mod+f", command: "chat.find", when: "!terminalFocus && !previewFocus" },
-  { key: "mod+shift+m", command: "modelPicker.toggle", when: "!terminalFocus" },
-  { key: "mod+shift+h", command: "composer.host", when: "!terminalFocus" },
-  { key: "mod+shift+e", command: "composer.effort", when: "!terminalFocus" },
-  { key: "mod+shift+a", command: "composer.mode", when: "!terminalFocus" },
-  { key: "mod+shift+x", command: "composer.workspace", when: "!terminalFocus" },
-  { key: "mod+shift+g", command: "composer.branch", when: "!terminalFocus" },
-  { key: "mod+shift+l", command: "composer.previousWorktree", when: "!terminalFocus" },
-  { key: "mod+shift+k", command: "pullRequest.copyNumber", when: "!terminalFocus" },
-  { key: "mod+shift+arrowup", command: "modelPicker.previousProvider", when: "modelPickerOpen" },
-  { key: "mod+shift+arrowdown", command: "modelPicker.nextProvider", when: "modelPickerOpen" },
+  { key: "mod+n", command: "chat.new", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+shift+o", command: "chat.new", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+shift+n", command: "chat.newLocal", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+alt+n", command: "chat.newWithoutProject", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+f", command: "chat.find", when: "!terminalFocus && !previewFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+shift+m", command: "modelPicker.toggle", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+shift+h", command: "composer.host", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+shift+e", command: "composer.effort", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+shift+a", command: "composer.mode", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+shift+x", command: "composer.workspace", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+shift+g", command: "composer.branch", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+shift+l", command: "composer.previousWorktree", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+shift+k", command: "pullRequest.copyNumber", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+shift+arrowup", command: "modelPicker.previousProvider", when: "modelPickerOpen" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+shift+arrowdown", command: "modelPicker.nextProvider", when: "modelPickerOpen" }, // gitleaks:allow (keyboard shortcut, not a credential)
   { key: "mod+o", command: "editor.openFavorite" },
   { key: "mod+shift+[", command: "thread.previous" },
   { key: "mod+shift+]", command: "thread.next" },
-  { key: "mod+shift+c", command: "thread.copyReference", when: "!terminalFocus" },
-  { key: "mod+shift+s", command: "thread.settle", when: "!terminalFocus" },
-  { key: "mod+shift+p", command: "thread.pin", when: "!terminalFocus" },
-  { key: "mod+z", command: "thread.undo", when: "!terminalFocus && !editableFocus" },
+  { key: "mod+shift+c", command: "thread.copyReference", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+shift+s", command: "thread.settle", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+shift+p", command: "thread.pin", when: "!terminalFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+z", command: "thread.undo", when: "!terminalFocus && !editableFocus" }, // gitleaks:allow (keyboard shortcut, not a credential)
   ...THREAD_JUMP_KEYBINDING_COMMANDS.map((command, index) => ({
     key: `mod+${index + 1}`,
     command,
@@ -140,13 +144,13 @@ export const DEFAULT_KEYBINDINGS: ReadonlyArray<KeybindingRule> = [
     command,
     when: "modelPickerOpen && isDesktop",
   })),
-  { key: "c", command: "usage.cost", when: "usagePageOpen" },
-  { key: "t", command: "usage.tokens", when: "usagePageOpen" },
-  { key: "l", command: "usage.limits", when: "usagePageOpen" },
-  { key: "mod+shift+1", command: "usage.period.day", when: "usagePageOpen" },
-  { key: "mod+shift+2", command: "usage.period.week", when: "usagePageOpen" },
-  { key: "mod+shift+3", command: "usage.period.month", when: "usagePageOpen" },
-  { key: "mod+shift+4", command: "usage.period.quarter", when: "usagePageOpen" },
+  { key: "c", command: "usage.cost", when: "usagePageOpen" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "t", command: "usage.tokens", when: "usagePageOpen" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "l", command: "usage.limits", when: "usagePageOpen" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+shift+1", command: "usage.period.day", when: "usagePageOpen" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+shift+2", command: "usage.period.week", when: "usagePageOpen" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+shift+3", command: "usage.period.month", when: "usagePageOpen" }, // gitleaks:allow (keyboard shortcut, not a credential)
+  { key: "mod+shift+4", command: "usage.period.quarter", when: "usagePageOpen" }, // gitleaks:allow (keyboard shortcut, not a credential)
 ];
 
 function normalizeKeyToken(token: string): string {

@@ -47,6 +47,10 @@ import { useCopyToClipboard } from "./useCopyToClipboard";
 import { useNewThreadHandler } from "./useHandleNewThread";
 import { useClientSettings } from "./useSettings";
 import { canTurnThreadIntoProject, useThreadActions } from "./useThreadActions";
+import {
+  resolveRestartThreadSessionAvailability,
+  useRestartThreadSession,
+} from "./useRestartThreadSession";
 
 function failureToast(title: string, error: unknown) {
   toastManager.add(
@@ -88,6 +92,7 @@ export function useThreadActionMenu(input: {
     markThreadUnread,
     turnThreadIntoProject,
   } = useThreadActions();
+  const restartThreadSession = useRestartThreadSession();
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
@@ -133,7 +138,11 @@ export function useThreadActionMenu(input: {
       };
       const isRegeneratingTitle = thread.titleRegeneration != null;
       const snoozePresets = resolveSnoozePresets(now, timestampFormat, threadRef.environmentId);
+      const restartAvailability = resolveRestartThreadSessionAvailability(threadRef);
+      const canRestartSession =
+        typeof restartAvailability === "boolean" ? restartAvailability : await restartAvailability;
       const items = buildThreadActionMenuItems({
+        canRestartSession,
         canOperate: readEnvironmentScope(threadRef.environmentId, AuthOrchestrationOperateScope),
         canFind: onFind !== undefined,
         branch: thread.branch ?? null,
@@ -255,6 +264,9 @@ export function useThreadActionMenu(input: {
               input: { threadId: threadRef.threadId, regenerateTitle: true },
             }),
           );
+          return;
+        case "restart-session":
+          await restartThreadSession(threadRef);
           return;
         case "mark-unread":
           markThreadUnread(threadRef);

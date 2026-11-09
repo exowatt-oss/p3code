@@ -7,6 +7,7 @@ import { Command, GlobalFlag } from "effect/cli";
 import * as CliError from "effect/cli/CliError";
 
 import * as ServerConfig from "../config.ts";
+import * as HarnessLaunchEnvironment from "../provider/HarnessLaunchEnvironment.ts";
 import { awaitLauncherLoss } from "../launcherWatch.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as AutomaticPort from "./automaticPort.ts";
@@ -34,7 +35,13 @@ const runServerCommand = Effect.fn("server.runServerCommand")(function* (
   const logLevel = yield* GlobalFlag.LogLevel;
   const selectAutomaticPort = yield* AutomaticPort.make.pipe(Effect.provide(ProcessRunner.layer));
   const config = yield* resolveServerConfig(flags, logLevel, { ...options, selectAutomaticPort });
-  const run = runServer.pipe(Effect.provideService(ServerConfig.ServerConfig, config));
+  // exowatt: HarnessLaunchEnvironment sits beside ServerConfig at the outermost level so every
+  // harness spawn site (provider drivers, MCP commands) can require it; wiring it
+  // deeper in server.ts once left the provider layer without it.
+  const run = runServer.pipe(
+    Effect.provide(HarnessLaunchEnvironment.layer),
+    Effect.provideService(ServerConfig.ServerConfig, config),
+  );
   if (config.mode !== "desktop" || config.desktopBootstrapToken === undefined) return yield* run;
   yield* Effect.sync(() => {
     process.stdout.on("error", ignoreClosedLauncherPipe);

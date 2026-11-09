@@ -16,6 +16,7 @@ import {
   latestProviderTurnTokenUsage,
   shouldOfferResumeCompaction,
 } from "@t3tools/client-runtime/state/context-window";
+import { withProviderTurnCost } from "./contextWindow";
 
 const decodeTokenUsage = Schema.decodeSync(OrchestrationV2ProviderTurnTokenUsage);
 
@@ -205,5 +206,49 @@ describe("latestProviderTurnTokenUsage", () => {
     ]) {
       expect(latestProviderTurnTokenUsage([], { ...projection, contextTransfers })).toBeNull();
     }
+  });
+});
+
+describe("withProviderTurnCost", () => {
+  const live = deriveLatestContextWindowSnapshot([], {
+    usedTokens: 1_000,
+    updatedAt: "2026-10-07T00:03:00.000Z",
+  });
+  const turn = (providerThreadId: string, ordinal: number, costUsd?: number, minute = ordinal) => ({
+    providerThreadId: providerThreadId as never,
+    ordinal,
+    tokenUsage: {
+      usedTokens: 1_000,
+      ...(costUsd === undefined ? {} : { costUsd }),
+      updatedAt: `2026-10-07T00:0${minute}:00.000Z`,
+    },
+  });
+
+  it("shows the latest session cost and the last turn's share of it", () => {
+    // Turn 3 is still running: its live report has no cost yet.
+    const snapshot = withProviderTurnCost(live, [
+      turn("pt-1", 1, 0.5),
+      turn("pt-1", 2, 1.84),
+      turn("pt-1", 3),
+    ]);
+    expect(snapshot?.cost).toEqual({ amount: 1.84, currency: "USD" });
+    expect(snapshot?.lastTurnCost?.amount).toBeCloseTo(1.34);
+    expect(snapshot?.usedTokens).toBe(1_000);
+  });
+
+  it("prices the first turn whole and skips the last turn when its predecessor is unknown", () => {
+    expect(withProviderTurnCost(live, [turn("pt-1", 1, 0.2)])?.lastTurnCost).toEqual({
+      amount: 0.2,
+      currency: "USD",
+    });
+    const windowed = withProviderTurnCost(live, [turn("pt-1", 5, 3)]);
+    expect(windowed?.cost?.amount).toBe(3);
+    expect(windowed?.lastTurnCost).toBeNull();
+  });
+
+  it("leaves the snapshot alone when no turn reported a priced cost", () => {
+    expect(withProviderTurnCost(live, [turn("pt-1", 1)])).toBe(live);
+    expect(withProviderTurnCost(live, [turn("pt-1", 1, 0)])).toBe(live);
+    expect(withProviderTurnCost(null, [turn("pt-1", 1, 1)])).toBeNull();
   });
 });

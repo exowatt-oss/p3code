@@ -1,7 +1,7 @@
-# T3 Code Mobile
+# P3 Code Mobile
 
 > [!NOTE]
-> To install the released app from the App Store or Google Play, see [Mobile app](../../docs/user/install.md#mobile-app). This guide covers building it from source.
+> P3 Code mobile apps are not published in app stores. This guide covers local source builds with your own distribution credentials.
 
 ## Quickstart
 
@@ -10,15 +10,14 @@
 
 This app has three variants:
 
-- `development`: Expo dev client, installable side-by-side as `T3 Code Dev`
-- `preview`: persistent internal preview build, installable side-by-side as `T3 Code Preview`
-- `production`: store/release build as `T3 Code`
+- `development`: Expo dev client, installable side-by-side as `P3 Code Dev`
+- `preview`: local preview build (not published), installable side-by-side as `P3 Code Preview`
+- `production`: local release build (requires your own signing credentials) as `P3 Code`
 
 Run commands from `apps/mobile`.
 
 T3 Connect is optional and disabled in a fresh clone. Public configuration belongs in the
-repository-root `.env` or `.env.local`, not an `apps/mobile/.env` file. See
-[`../../.env.example`](../../.env.example).
+repository-root `.env` or `.env.local`, not an `apps/mobile/.env` file. Create a gitignored local env file as needed; do not commit credentials.
 
 ## Development
 
@@ -31,15 +30,7 @@ vp run mobile:install ios [simulator-udid]
 vp run dev:client
 ```
 
-The device argument can be omitted when exactly one device is booted or connected. The helper
-compares this checkout's Expo fingerprint and the installed binary with its last install record,
-and reuses a matching client. Otherwise it installs the build for that fingerprint from
-`~/.cache/t3code/native-clients/artifacts`, then the shared task cache, and builds only when
-neither has it. One iOS simulator build serves every iPhone and iPad simulator, and one APK per
-ABI (x86_64 or arm64-v8a) serves every emulator and phone of that ABI. Build output goes to the
-log file it prints (`T3_NATIVE_CLIENT_VERBOSE=1` streams it instead). Builds are shared back when
-your task-cache login (`bash infra/task-cache/install.sh`) can write. `T3_NATIVE_CLIENT_CACHE=read`
-skips the upload and `off` skips the shared cache. Physical iPhones still use `vp run ios:dev`.
+The device argument can be omitted when exactly one device is booted or connected. Native iOS builds require the GhosttyKit asset to be rebuilt from its pinned MIT source (see `modules/t3-terminal/THIRD_PARTY_NOTICES.md`), your own Apple signing identity, and a bundle identifier you control. Android builds require their platform SDK. Physical iPhones use `vp run ios:dev`. The shared internal task-cache workspace is not part of this source export.
 
 `--session <name>` installs into an agent-device session opened elsewhere, such as a device pool
 or a cloud simulator, instead of a local device: `vp run mobile:install android --session pool-1

@@ -84,6 +84,9 @@ export const ProviderAdapterV2Event = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("app_thread.created"),
     driver: ProviderDriverKind,
+    // Provider-native subagent child threads may be created or updated after
+    // the launching run's subscriber has closed (phi background subagents).
+    ingestWithoutRun: Schema.optional(Schema.Boolean),
     appThread: OrchestrationV2AppThread,
     createOnly: Schema.optional(Schema.Boolean),
   }),
@@ -109,21 +112,26 @@ export const ProviderAdapterV2Event = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("node.updated"),
     driver: ProviderDriverKind,
+    ingestWithoutRun: Schema.optional(Schema.Boolean),
     node: OrchestrationV2ExecutionNode,
   }),
   Schema.Struct({
     type: Schema.Literal("subagent.updated"),
     driver: ProviderDriverKind,
+    // Provider-native background work may report after its run subscriber has closed.
+    ingestWithoutRun: Schema.optional(Schema.Boolean),
     subagent: OrchestrationV2Subagent,
   }),
   Schema.Struct({
     type: Schema.Literal("message.updated"),
     driver: ProviderDriverKind,
+    ingestWithoutRun: Schema.optional(Schema.Boolean),
     message: OrchestrationV2ConversationMessage,
   }),
   Schema.Struct({
     type: Schema.Literal("turn_item.updated"),
     driver: ProviderDriverKind,
+    ingestWithoutRun: Schema.optional(Schema.Boolean),
     turnItem: OrchestrationV2TurnItem,
   }),
   // Start before the root terminal; clear only after the final covered projection.
@@ -642,6 +650,10 @@ export interface ProviderAdapterV2SessionRuntime {
   ) => Effect.Effect<boolean, ProviderAdapterV2Error>;
   readonly startTurn: (
     input: ProviderAdapterV2TurnInput,
+  ) => Effect.Effect<void, ProviderAdapterV2Error>;
+  /** Optional live, session-scoped selection update without starting another turn. */
+  readonly setModelSelection?: (
+    modelSelection: ModelSelection,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
   readonly compactThread?: (
     input: ProviderAdapterV2TurnInput,

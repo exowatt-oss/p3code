@@ -28,6 +28,10 @@ export const DispatchModeLimit = Context.Reference<DispatchModeLimitValue | unde
   { defaultValue: () => undefined },
 );
 
+/** The less permissive of two runtime modes. */
+export const lowerRuntimeMode = (left: RuntimeMode, right: RuntimeMode): RuntimeMode =>
+  isRuntimeModeAbove(left, right) ? right : left;
+
 const interactionModeRank: Record<ProviderInteractionMode, number> = { plan: 0, default: 1 };
 
 export const exceededDispatchModeLimit = (

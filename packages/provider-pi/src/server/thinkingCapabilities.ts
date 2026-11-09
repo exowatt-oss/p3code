@@ -31,9 +31,14 @@ export function thinkingCapabilitiesForPiModel(
   return createModelCapabilities({
     optionDescriptors: [
       {
-        id: "thinking",
+        // exowatt: "thinkingLevel" (not Pi's "thinking") matches the rest of the phi/exowatt
+        // catalog, so a stored effort survives a model switch. LegacyV1ThreadImporter's
+        // `withPhiThinkingOption` still reads the old "thinking" id.
+        id: "thinkingLevel",
         label: "Thinking",
         type: "select",
+        // Upstream's one model+effort control finds reasoning by this role, not by our id.
+        role: "reasoning",
         options: levels.map((level): ProviderOptionChoice => ({
           id: level,
           label: PI_THINKING_LEVEL_LABELS[level],

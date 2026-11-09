@@ -31,7 +31,11 @@ import { useServerConfigs } from "~/state/entities";
 import { useManagedPolicy } from "~/state/managedPolicy";
 import { environmentPresentations } from "~/state/presentation";
 import { ManagedControl } from "./ManagedPolicy";
-import { manualServerUpdateCommand } from "~/versionSkew";
+import {
+  EXOWATT_P3_SERVER_UPDATE_GUIDANCE,
+  manualServerUpdateCommand,
+  requiresExowattDesktopServerUpdate,
+} from "~/versionSkew";
 import { crossesReleaseTrack } from "@t3tools/shared/cliRelease";
 import { Button } from "./ui/button";
 import { toastManager } from "./ui/toast";
@@ -96,6 +100,11 @@ export interface ServerUpdateTarget {
   readonly targetDatabaseMigration?: number;
   /** The host already runs its track's newest build and only saves the track. */
   readonly trackOnly?: boolean;
+  /**
+   * exowatt: the server's last reported version, so a P3 server is never offered stock `t3`
+   * (fallback when the environment has no live server config).
+   */
+  readonly serverVersion?: string | undefined;
 }
 
 type UpdateButtonProps = Pick<ComponentProps<typeof Button>, "variant" | "size" | "className"> & {
@@ -187,6 +196,12 @@ export function ServerUpdatesAction({
       target.selfUpdate !== null &&
       (target.selfUpdate !== "desktop-managed" || target.desktopAppUpdate) &&
       managedUpdatesDenial(serverConfigs.get(target.environmentId)?.managedPolicy) === undefined &&
+      !requiresExowattDesktopServerUpdate({
+        ...target,
+        serverVersion:
+          serverConfigs.get(target.environmentId)?.environment.serverVersion ??
+          target.serverVersion,
+      }) &&
       !refusedCrossing(target, serverConfigs.get(target.environmentId)?.environment.serverVersion),
   );
   const handleUpdate = async () => {
@@ -201,7 +216,7 @@ export function ServerUpdatesAction({
       if (desktopTargets.length > 0) {
         const confirmed =
           (await requestConfirmDialog(
-            `Update the T3 Code desktop apps on ${desktopTargets.map((target) => target.serverLabel).join(", ")}? They will close and relaunch on those machines.`,
+            `Update the P3 Code desktop apps on ${desktopTargets.map((target) => target.serverLabel).join(", ")}? They will close and relaunch on those machines.`,
           )) ?? true;
         if (!confirmed) return;
       }
@@ -263,6 +278,7 @@ export function ServerUpdateAction({
   desktopAppUpdate = false,
   targetVersion,
   channel,
+  serverVersion: reportedServerVersion,
   label = "Update",
   variant = "outline",
   size = "xs",
@@ -270,7 +286,8 @@ export function ServerUpdateAction({
   appearance = "button",
 }: ServerUpdateTarget & UpdateButtonProps) {
   const isDesktopAppUpdate = selfUpdate === "desktop-managed";
-  const serverVersion = useServerConfigs().get(environmentId)?.environment.serverVersion;
+  const serverVersion =
+    useServerConfigs().get(environmentId)?.environment.serverVersion ?? reportedServerVersion;
   const sessionStateAtom = environmentSession.sessionStateAtom(environmentId);
   const canUpdate = useAtomValue(sessionStateAtom, canUpdateServer);
   const updatesDenial = managedUpdatesDenial(useManagedPolicy(environmentId));
@@ -307,7 +324,7 @@ export function ServerUpdateAction({
     if (isDesktopAppUpdate) {
       const confirmed =
         (await requestConfirmDialog(
-          `Update the T3 Code desktop app that runs the ${serverLabel}? It will close and relaunch on that machine.`,
+          `Update the P3 Code desktop app that runs the ${serverLabel}? It will close and relaunch on that machine.`,
         )) ?? true;
       if (!confirmed) {
         return;
@@ -340,6 +357,12 @@ export function ServerUpdateAction({
       <span className="text-muted-foreground text-xs">
         Update the desktop app on that machine to update this server.
       </span>
+    );
+  }
+
+  if (requiresExowattDesktopServerUpdate({ selfUpdate, serverVersion, targetVersion })) {
+    return (
+      <span className="text-muted-foreground text-xs">{EXOWATT_P3_SERVER_UPDATE_GUIDANCE}.</span>
     );
   }
 

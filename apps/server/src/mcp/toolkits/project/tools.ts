@@ -136,7 +136,15 @@ const ThreadLaunchTool = Tool.make("t3_thread_launch", {
     ),
     title: TrimmedNonEmptyString,
     modelSelection: Schema.optional(ModelSelection),
-    runtimeMode: Schema.optional(RuntimeMode),
+    runtimeMode: Schema.optional(
+      RuntimeMode.annotate({
+        description:
+          "Omitted inherits this thread's own mode. phi has no 'auto' mode: a " +
+          "target provider without one (phi today) resolves a requested " +
+          "'auto' to this thread's own effective mode instead, never to " +
+          "'approval-required'.",
+      }),
+    ),
     interactionMode: Schema.optional(ProviderInteractionMode),
     workspaceStrategy: Schema.optional(
       OrchestrationV2ThreadLaunchWorkspaceStrategy.annotate({

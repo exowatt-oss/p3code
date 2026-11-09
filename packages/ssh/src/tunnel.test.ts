@@ -1,3 +1,9 @@
+// @effect-diagnostics nodeBuiltinImport:off - the socket-cleanup test runs the real prepare script in a temp home.
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+
 import { assert, describe, it } from "@effect/vitest";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -9,11 +15,12 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
+import * as Queue from "effect/Queue";
 import * as Result from "effect/Result";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import { TestClock } from "effect/testing";
-import { HttpClient, HttpClientResponse } from "effect/http";
+import { HttpClient, HttpClientError, HttpClientResponse } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as SshAuth from "./auth.ts";
@@ -84,6 +91,7 @@ function commandArgs(command: ChildProcess.Command): ReadonlyArray<string> {
 }
 
 const ARCHIVE = { archiveVersion: "1.2.3-preview.20260911.4" } as const;
+const TEST_NODE_ENGINE_RANGE = "^22.16 || ^23.11 || >=24.10";
 
 describe("ssh tunnel scripts", () => {
   it("rejects archive versions that are not a single exact version segment", () => {
@@ -351,6 +359,91 @@ describe("ssh tunnel scripts", () => {
     }),
   );
 
+  it.effect("rechecks a live tunnel before reusing its prepared runner", () => {
+    let tunnelStarts = 0;
+    let httpRequests = 0;
+    let staleProbeStarted: Deferred.Deferred<void> | null = null;
+    let prepareCalls = 0;
+    const launchScripts: Array<string> = [];
+    const target = { alias: "devbox", hostname: "devbox", username: null, port: null };
+    const collectStdin = (command: ChildProcess.Command) =>
+      Effect.gen(function* () {
+        if (command._tag !== "StandardCommand") return new Uint8Array();
+        const stdin: unknown = command.options.stdin;
+        if (typeof stdin !== "object" || stdin === null || !("stream" in stdin)) {
+          return new Uint8Array();
+        }
+        const chunks = yield* Stream.runCollect(stdin.stream as Stream.Stream<Uint8Array>);
+        return new Uint8Array(chunks.flatMap((chunk) => Array.from(chunk)));
+      });
+    const spawner = ChildProcessSpawner.make((command) =>
+      Effect.gen(function* () {
+        const args = commandArgs(command);
+        if (args.includes("-N")) {
+          tunnelStarts += 1;
+          return makeRunningProcess(() => undefined);
+        }
+        if (args.includes("sh") && args.includes("--")) {
+          const stdin = yield* collectStdin(command);
+          launchScripts.push(new TextDecoder().decode(stdin));
+          return makeSuccessfulProcess('{"remotePort":3773}\n');
+        }
+        return makeSuccessfulProcess('{"stopped":true}\n');
+      }),
+    );
+    const httpClient = HttpClient.make((request) =>
+      Effect.gen(function* () {
+        const requestNumber = ++httpRequests;
+        const stale = tunnelStarts === 1 && requestNumber >= 3;
+        if (stale && staleProbeStarted !== null) {
+          yield* Deferred.succeed(staleProbeStarted, undefined);
+        }
+        return HttpClientResponse.fromWeb(request, new Response("", { status: stale ? 503 : 200 }));
+      }),
+    );
+    const layer = Layer.mergeAll(
+      NodeServices.layer,
+      NodeCrypto.layer,
+      Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+      Layer.succeed(HttpClient.HttpClient, httpClient),
+      Layer.succeed(NetService.NetService, testNetService),
+      SshAuth.SshPasswordPrompt.disabledLayer,
+      TestClock.layer(),
+      SshTunnel.SshEnvironmentManager.layer({
+        resolveCliRunner: Effect.succeed(ARCHIVE),
+        prepareRemoteRunner: () =>
+          Effect.sync(() => {
+            prepareCalls += 1;
+            return {
+              nodeScriptPath: `/prepared/runner-${prepareCalls}.mjs`,
+              nodeEngineRange: TEST_NODE_ENGINE_RANGE,
+            };
+          }),
+      }),
+    );
+    return Effect.gen(function* () {
+      const manager = yield* SshTunnel.SshEnvironmentManager;
+
+      yield* manager.ensureEnvironment(target);
+      assert.equal(prepareCalls, 1);
+      assert.include(launchScripts[0] ?? "", "T3_NODE_SCRIPT_PATH='/prepared/runner-1.mjs'");
+
+      yield* manager.ensureEnvironment(target);
+      assert.equal(prepareCalls, 1);
+      assert.equal(tunnelStarts, 1);
+
+      staleProbeStarted = yield* Deferred.make<void>();
+      const reconnect = yield* Effect.forkChild(manager.ensureEnvironment(target));
+      yield* Deferred.await(staleProbeStarted);
+      yield* TestClock.adjust(Duration.seconds(11));
+      yield* Fiber.join(reconnect);
+
+      assert.equal(prepareCalls, 2);
+      assert.equal(tunnelStarts, 2);
+      assert.include(launchScripts[1] ?? "", "T3_NODE_SCRIPT_PATH='/prepared/runner-2.mjs'");
+    }).pipe(Effect.provide(layer), Effect.scoped);
+  });
+
   it.effect.each(["local tunnel", "remote server"] as const)(
     "waits for %s shutdown before reconnecting the same target",
     (stalledStep) =>
@@ -456,7 +549,371 @@ describe("ssh tunnel scripts", () => {
   );
 });
 
+describe("configured SSH health-check timeout", () => {
+  it.effect.each([5_000, 30_000])(
+    "connects and reuses a slow tunnel with a %sms timeout",
+    (probeTimeoutMs) =>
+      Effect.gen(function* () {
+        const requests = yield* Queue.unbounded<void>();
+        let tunnelStarts = 0;
+        let tunnelStops = 0;
+        const responseDelayMs = probeTimeoutMs === 30_000 ? 25_000 : 2_500;
+        const spawner = ChildProcessSpawner.make((command) =>
+          Effect.sync(() => {
+            const args = commandArgs(command);
+            if (args.includes("-N")) {
+              tunnelStarts += 1;
+              return makeRunningProcess(() => {
+                tunnelStops += 1;
+              });
+            }
+            if (args.includes("sh") && args.includes("--")) {
+              return makeSuccessfulProcess('{"remotePort":3773}\n');
+            }
+            return makeSuccessfulProcess("\n");
+          }),
+        );
+        const slowHttpClient = HttpClient.make((request) =>
+          Queue.offer(requests, undefined).pipe(
+            Effect.andThen(Effect.sleep(Duration.millis(responseDelayMs))),
+            Effect.as(HttpClientResponse.fromWeb(request, new Response("", { status: 200 }))),
+          ),
+        );
+        const layer = Layer.mergeAll(
+          NodeServices.layer,
+          NodeCrypto.layer,
+          Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Layer.succeed(HttpClient.HttpClient, slowHttpClient),
+          Layer.succeed(NetService.NetService, testNetService),
+          SshAuth.SshPasswordPrompt.disabledLayer,
+          SshTunnel.SshEnvironmentManager.layer({ resolveCliRunner: Effect.succeed(ARCHIVE) }),
+          TestClock.layer(),
+        );
+        yield* Effect.gen(function* () {
+          const manager = yield* SshTunnel.SshEnvironmentManager;
+          const target = { alias: "vm", hostname: "vm", username: "dev", port: 22 };
+          const first = yield* Effect.forkChild(
+            manager.ensureEnvironment(target, { probeTimeoutMs }),
+          );
+          yield* Queue.take(requests);
+          // Let the request fiber register its fake-clock sleep before advancing
+          // the clock; Queue.offer wakes this fiber before Effect.andThen runs.
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust(Duration.millis(responseDelayMs));
+          const connected = yield* Fiber.join(first);
+          const reconnect = yield* Effect.forkChild(
+            manager.ensureEnvironment(target, { probeTimeoutMs }),
+          );
+          yield* Queue.take(requests);
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust(Duration.millis(responseDelayMs));
+          assert.deepEqual(yield* Fiber.join(reconnect), connected);
+          assert.equal(tunnelStarts, 1);
+          assert.equal(tunnelStops, 0);
+        }).pipe(Effect.provide(layer), Effect.scoped);
+      }),
+  );
+
+  // exowatt: the SSH manager must tolerate a forwarded request after multiple RTTs,
+  // even when an existing desktop preference still passes the old one-second value.
+  it.effect.each([undefined, 1_000])(
+    "accepts a 1.5-second forwarded response with %s as the configured timeout",
+    (probeTimeoutMs) =>
+      Effect.gen(function* () {
+        const requests = yield* Queue.unbounded<void>();
+        let completed = 0;
+        const spawner = ChildProcessSpawner.make((command) =>
+          Effect.sync(() => {
+            const args = commandArgs(command);
+            if (args.includes("-N")) return makeRunningProcess(() => undefined);
+            if (args.includes("sh") && args.includes("--")) {
+              return makeSuccessfulProcess('{"remotePort":3773}\n');
+            }
+            return makeSuccessfulProcess("\n");
+          }),
+        );
+        const slowClient = HttpClient.make((request) =>
+          Queue.offer(requests, undefined).pipe(
+            Effect.andThen(Effect.sleep(Duration.millis(1_500))),
+            Effect.map(() => {
+              completed += 1;
+              return HttpClientResponse.fromWeb(request, new Response("", { status: 200 }));
+            }),
+          ),
+        );
+        const layer = Layer.mergeAll(
+          NodeServices.layer,
+          NodeCrypto.layer,
+          Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+          Layer.succeed(HttpClient.HttpClient, slowClient),
+          Layer.succeed(NetService.NetService, testNetService),
+          SshAuth.SshPasswordPrompt.disabledLayer,
+          SshTunnel.SshEnvironmentManager.layer({ resolveCliRunner: Effect.succeed(ARCHIVE) }),
+          TestClock.layer(),
+        );
+        yield* Effect.gen(function* () {
+          const manager = yield* SshTunnel.SshEnvironmentManager;
+          const target = { alias: "vm", hostname: "vm", username: "dev", port: 22 };
+          const fiber = yield* Effect.forkChild(
+            manager.ensureEnvironment(target, probeTimeoutMs ? { probeTimeoutMs } : undefined),
+          );
+          yield* Queue.take(requests);
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust(Duration.millis(1_500));
+          yield* Fiber.join(fiber);
+          assert.equal(completed, 1);
+        }).pipe(Effect.provide(layer), Effect.scoped);
+      }),
+  );
+
+  it.effect("retries refused forwarded connections quickly and stops at the readiness budget", () =>
+    Effect.gen(function* () {
+      let requestCount = 0;
+      const firstRequest = yield* Deferred.make<void>();
+      const spawner = ChildProcessSpawner.make((command) =>
+        Effect.sync(() => {
+          const args = commandArgs(command);
+          if (args.includes("-N")) return makeRunningProcess(() => undefined);
+          if (args.includes("sh") && args.includes("--")) {
+            return makeSuccessfulProcess('{"remotePort":3773}\n');
+          }
+          return makeSuccessfulProcess("\n");
+        }),
+      );
+      const refusedClient = HttpClient.make((request) =>
+        Deferred.succeed(firstRequest, undefined).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              requestCount += 1;
+            }),
+          ),
+          Effect.andThen(
+            Effect.fail(
+              new HttpClientError.HttpClientError({
+                reason: new HttpClientError.TransportError({
+                  request,
+                  cause: new Error("ECONNREFUSED"),
+                }),
+              }),
+            ),
+          ),
+        ),
+      );
+      const layer = Layer.mergeAll(
+        NodeServices.layer,
+        NodeCrypto.layer,
+        Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Layer.succeed(HttpClient.HttpClient, refusedClient),
+        Layer.succeed(NetService.NetService, testNetService),
+        SshAuth.SshPasswordPrompt.disabledLayer,
+        SshTunnel.SshEnvironmentManager.layer({ resolveCliRunner: Effect.succeed(ARCHIVE) }),
+        TestClock.layer(),
+      );
+      yield* Effect.gen(function* () {
+        const manager = yield* SshTunnel.SshEnvironmentManager;
+        const target = { alias: "vm", hostname: "vm", username: "dev", port: 22 };
+        const fiber = yield* Effect.forkChild(Effect.result(manager.ensureEnvironment(target)));
+        yield* Deferred.await(firstRequest);
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust(Duration.seconds(1));
+        assert.isAbove(requestCount, 1);
+        yield* TestClock.adjust(Duration.seconds(60));
+        const result = yield* Fiber.join(fiber);
+        assert.isTrue(Result.isFailure(result));
+      }).pipe(Effect.provide(layer), Effect.scoped);
+    }),
+  );
+});
+
 // On macOS, Node can bind 127.0.0.1:<port> while another process (such as the
 // desktop app with network access on) listens on *:<port>. Linux refuses that
 // bind unless both sockets set SO_REUSEPORT, so on Linux the preload adds it to
 // the picker's probe and the holder sets it too.
+
+// exowatt: reverse peer links ride an SSH-forwarded unix socket on the remote, not a TCP port.
+describe("exowatt reverse forward", () => {
+  const REMOTE_PEER_DIR = "/home/dev/.t3/peer";
+
+  const makeTunnelProcess = (input: {
+    readonly stderr: string;
+    readonly exitCode?: number;
+    readonly onKill?: () => void;
+  }) => {
+    const stderr = Stream.make(new TextEncoder().encode(input.stderr));
+    if (input.exitCode !== undefined) {
+      return ChildProcessSpawner.makeHandle({
+        pid: ChildProcessSpawner.ProcessId(124),
+        stdout: Stream.empty,
+        stderr,
+        all: stderr,
+        exitCode: Effect.succeed(ChildProcessSpawner.ExitCode(input.exitCode)),
+        isRunning: Effect.succeed(false),
+        kill: () => Effect.void,
+        stdin: Sink.drain,
+        getInputFd: () => Sink.drain,
+        getOutputFd: () => Stream.empty,
+        unref: Effect.succeed(Effect.void),
+      });
+    }
+    return ChildProcessSpawner.makeHandle({
+      pid: ChildProcessSpawner.ProcessId(125),
+      stdout: Stream.empty,
+      stderr,
+      all: stderr,
+      exitCode: Effect.never,
+      isRunning: Effect.succeed(true),
+      kill: () => Effect.sync(() => input.onKill?.()),
+      stdin: Sink.drain,
+      getInputFd: () => Sink.drain,
+      getOutputFd: () => Stream.empty,
+      unref: Effect.succeed(Effect.void),
+    });
+  };
+
+  const run = (
+    tunnel: (args: ReadonlyArray<string>, attempt: number) => ReturnType<typeof makeTunnelProcess>,
+    options: { readonly prepareOutput?: string; readonly environmentId?: string } = {},
+  ) =>
+    Effect.gen(function* () {
+      const tunnelArgs: Array<ReadonlyArray<string>> = [];
+      const prepareArgs: Array<ReadonlyArray<string>> = [];
+      const environmentId = options.environmentId ?? "env-mac";
+      const spawner = ChildProcessSpawner.make((command) =>
+        Effect.sync(() => {
+          const args = commandArgs(command);
+          if (args.includes("-N")) {
+            tunnelArgs.push(args);
+            return tunnel(args, tunnelArgs.length);
+          }
+          if (args.at(-1) === environmentId) {
+            prepareArgs.push(args);
+            return makeSuccessfulProcess(options.prepareOutput ?? `${REMOTE_PEER_DIR}\n`);
+          }
+          if (args.includes("sh") && args.includes("--")) {
+            return makeSuccessfulProcess('{"remotePort":3773}\n');
+          }
+          return makeSuccessfulProcess("\n");
+        }),
+      );
+      const layer = Layer.mergeAll(
+        NodeServices.layer,
+        NodeCrypto.layer,
+        Layer.succeed(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Layer.succeed(HttpClient.HttpClient, testHttpClient),
+        Layer.succeed(NetService.NetService, testNetService),
+        SshAuth.SshPasswordPrompt.disabledLayer,
+        SshTunnel.SshEnvironmentManager.layer({
+          resolveCliRunner: Effect.succeed(ARCHIVE),
+          reverseForward: Effect.succeed({ port: 3774, environmentId }),
+        }),
+      );
+      const bootstrap = yield* Effect.gen(function* () {
+        const manager = yield* SshTunnel.SshEnvironmentManager;
+        return yield* manager.ensureEnvironment({
+          alias: "vm",
+          hostname: "vm",
+          username: "dev",
+          port: 22,
+        });
+      }).pipe(Effect.provide(layer), Effect.scoped);
+      return { bootstrap, tunnelArgs, prepareArgs };
+    });
+
+  it("forwards a remote unix socket to this desktop's loopback port", () => {
+    assert.equal(
+      SshTunnel.exowattReverseForwardSpec("/home/dev/.t3/peer/env-mac-ab12cd34.sock", 3774),
+      "/home/dev/.t3/peer/env-mac-ab12cd34.sock:127.0.0.1:3774",
+    );
+  });
+
+  it("builds the socket path only from a plain absolute directory and environment id", () => {
+    const path = (directory: string, environmentId = "env-mac", nonce = "ab12cd34") =>
+      SshTunnel.exowattReverseSocketPath({ directory, environmentId, nonce });
+    assert.equal(path(REMOTE_PEER_DIR), "/home/dev/.t3/peer/env-mac-ab12cd34.sock");
+    assert.isNull(path(".t3/peer"));
+    assert.isNull(path("/home/dev/my:dir/.t3/peer"));
+    assert.isNull(path("/home/dev/.t3/peer\n/tmp"));
+    assert.isNull(path(REMOTE_PEER_DIR, "../env"));
+    assert.isNull(path(REMOTE_PEER_DIR, "env-mac", "not-hex"));
+    assert.isTrue(
+      SshTunnel.isRemoteForwardFailure(
+        "Error: remote port forwarding failed for listen path /home/dev/.t3/peer/x.sock\n",
+      ),
+    );
+    assert.isFalse(SshTunnel.isRemoteForwardFailure("channel 0: open failed\n"));
+  });
+
+  it("prepares a 0700 directory and clears only this desktop's stale sockets", () => {
+    const script = SshTunnel.REMOTE_REVERSE_SOCKET_PREPARE_SCRIPT;
+    assert.include(script, "umask 077");
+    assert.include(script, 'chmod 700 "$PEER_DIR"');
+    const home = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "p3-ssh-peer-"));
+    try {
+      const peerDir = NodePath.join(home, ".t3", "peer");
+      NodeFS.mkdirSync(peerDir, { recursive: true });
+      const nonce = "0123456789abcdef01234567";
+      const names = [
+        `env-mac-${nonce}.sock`,
+        `env-mac-extra-${nonce}.sock`,
+        `env-mac-${nonce.slice(1)}.sock`,
+        `env-other-${nonce}.sock`,
+      ];
+      for (const name of names) NodeFS.writeFileSync(NodePath.join(peerDir, name), "");
+      const printed = NodeChildProcess.execFileSync("sh", ["-c", script, "sh", "env-mac"], {
+        env: { ...process.env, HOME: home },
+        encoding: "utf8",
+      });
+      assert.equal(printed.trim(), peerDir);
+      assert.deepEqual(NodeFS.readdirSync(peerDir).toSorted(), names.slice(1).toSorted());
+      assert.equal(NodeFS.statSync(peerDir).mode & 0o777, 0o700);
+    } finally {
+      NodeFS.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it.effect("surfaces the socket as a unix: reverse URL with a fresh name per connection", () =>
+    Effect.gen(function* () {
+      const { bootstrap, tunnelArgs, prepareArgs } = yield* run(() =>
+        makeTunnelProcess({ stderr: "" }),
+      );
+      assert.equal(prepareArgs.length, 1);
+      assert.equal(tunnelArgs.length, 1);
+      const args = tunnelArgs[0]!;
+      const spec = args[args.indexOf("-R") + 1]!;
+      assert.match(spec, /^\/home\/dev\/\.t3\/peer\/env-mac-[a-f0-9]{24}\.sock:127\.0\.0\.1:3774$/);
+      assert.equal(bootstrap.reverseHttpBaseUrl, `unix:${spec.slice(0, spec.indexOf(":"))}`);
+      assert.isTrue(args.includes("ExitOnForwardFailure=yes"));
+      assert.isFalse(args.some((arg) => arg.includes("0.0.0.0") || arg.startsWith("127.0.0.1:0")));
+    }),
+  );
+
+  it.effect("skips the reverse forward when the remote home can't be used in a -R spec", () =>
+    Effect.gen(function* () {
+      const { bootstrap, tunnelArgs } = yield* run(() => makeTunnelProcess({ stderr: "" }), {
+        prepareOutput: "/home/my:dev/.t3/peer\n",
+      });
+      assert.isUndefined(bootstrap.reverseHttpBaseUrl);
+      assert.isFalse(tunnelArgs[0]!.includes("-R"));
+    }),
+  );
+
+  it.effect("falls back to a plain tunnel when sshd refuses the reverse forward", () =>
+    Effect.gen(function* () {
+      const { bootstrap, tunnelArgs } = yield* run((args) =>
+        args.includes("-R")
+          ? makeTunnelProcess({
+              stderr:
+                "Error: remote port forwarding failed for listen path /home/dev/.t3/peer/x.sock\n",
+              exitCode: 255,
+            })
+          : makeTunnelProcess({ stderr: "" }),
+      );
+      assert.isUndefined(bootstrap.reverseHttpBaseUrl);
+      assert.equal(bootstrap.httpBaseUrl, "http://127.0.0.1:41773/");
+      assert.deepEqual(
+        tunnelArgs.map((args) => args.includes("-R")),
+        [true, false],
+      );
+    }),
+  );
+});

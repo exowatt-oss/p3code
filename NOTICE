@@ -1,0 +1,14 @@
+P3 Code
+Copyright (c) 2026 Exowatt, Inc. (modifications)
+
+Fork of T3 Code (https://github.com/pingdotgg/t3code).
+Copyright (c) 2026 T3 Tools Inc.
+The original MIT LICENSE and copyright notice are preserved in LICENSE. This fork is not endorsed by T3 Tools Inc.
+
+Ghostty / libghostty (https://github.com/ghostty-org/ghostty): MIT, used by the upstream-inherited native and WebAssembly terminal assets. Its revision, build provenance and MIT notice are in apps/mobile/modules/t3-terminal/THIRD_PARTY_NOTICES.md and native/libghostty-vt/LICENSE.
+
+T3 Code Pets (https://github.com/RaymondWKWong/t3code-pets, revision 7f9eae7): MIT, Copyright (c) 2026 Raymond Wong. The vendored runtime in apps/web/src/components/exowatt-pets/vendor/ and the Romeo sprite assets in romeo.t3pet come from this project; retain its MIT attribution in source and derived distributions.
+
+The web Symbols Nerd Font is distributed with its bundled MIT license in apps/web/src/terminal/ghostty/fonts/LICENSE (Ryan L McIntyre). The upstream-inherited Android MesloLGS NF font is Apache-2.0, with provenance in apps/mobile/modules/t3-terminal/THIRD_PARTY_NOTICES.md. DM Sans and JetBrains Mono are named as fallback/system fonts, not checked-in font assets; if future builds bundle copies, include their SIL Open Font License 1.1 notices.
+
+Sharp/libvips and heic-to are LGPL-family runtime dependencies: assess final binary and web distributions for dynamic linking, source/relinkability and notices before publishing installers. Anthropic and Cursor SDKs are fetched dependencies with separate vendor terms; no copy is included in the source export.

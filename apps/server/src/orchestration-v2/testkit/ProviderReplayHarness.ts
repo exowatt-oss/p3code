@@ -3,6 +3,7 @@ import { DEFAULT_SIGNAL_EXPORT } from "@t3tools/shared/observability";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type {
+  ExowattPeerInbound,
   ManagedPolicyDocument,
   ProviderDriverKind,
   ProviderReplayTranscript,
@@ -282,6 +283,7 @@ export function layerWithRegistry<Error>(
     readonly recoverOnStartup?: boolean;
     readonly continueThreadsAfterServerUpdate?: boolean;
     readonly managedPolicy?: ManagedPolicyDocument;
+    readonly exowattPeerInbound?: ExowattPeerInbound;
   } = {},
 ): Layer.Layer<
   | Orchestrator.OrchestratorV2
@@ -316,6 +318,9 @@ export function layerWithRegistry<Error>(
           ...(options.continueThreadsAfterServerUpdate === undefined
             ? {}
             : { continueThreadsAfterServerUpdate: options.continueThreadsAfterServerUpdate }),
+          ...(options.exowattPeerInbound === undefined
+            ? {}
+            : { exowattPeerInbound: options.exowattPeerInbound }),
         },
         policy.summary,
       ),

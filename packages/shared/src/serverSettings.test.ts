@@ -22,6 +22,7 @@ import {
   modelPreferencesMigrationPatch,
   resolveModelPreferences,
   isModelSelectionProviderEnabled,
+  parsePersistedExowattPeerInbound,
   parsePersistedServerObservabilitySettings,
   resolveSourceControlWriterModelSelection,
   resolveSpeechPostProcessingModelSelection,
@@ -289,6 +290,35 @@ describe("serverSettings helpers", () => {
       otlpMetricsUrl: undefined,
       otlpLogsUrl: undefined,
     });
+  });
+
+  it("reads the persisted peer inbound gate, off when absent or unreadable", () => {
+    expect(parsePersistedExowattPeerInbound('{"exowattPeerInbound":"full-access"}')).toBe(
+      "full-access",
+    );
+    expect(parsePersistedExowattPeerInbound("{}")).toBe("off");
+    expect(parsePersistedExowattPeerInbound("{")).toBe("off");
+  });
+
+  // A push supersedes the previous one whole: a stale key from an earlier push
+  // must not ride along into every later one.
+  it("replaces the client-settings push instead of merging pushes", () => {
+    const current = {
+      ...DEFAULT_SERVER_SETTINGS,
+      exowattClientSettingsPush: {
+        patch: { glassOpacity: 60, fontSizeInterface: 18 },
+        setAt: "2026-09-09T00:00:00.000Z",
+      },
+    };
+
+    expect(
+      applyServerSettingsPatch(current, {
+        exowattClientSettingsPush: {
+          patch: { glassOpacity: 90 },
+          setAt: "2026-09-09T01:00:00.000Z",
+        },
+      }).exowattClientSettingsPush,
+    ).toEqual({ patch: { glassOpacity: 90 }, setAt: "2026-09-09T01:00:00.000Z" });
   });
 
   it("still deep merges text generation selection when only options are provided", () => {

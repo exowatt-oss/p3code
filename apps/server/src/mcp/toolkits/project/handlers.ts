@@ -218,7 +218,11 @@ export const layer = McpToolAccess.toLayer(ProjectToolkit, {
             : runtimeMode;
         if (!replaying) {
           const providers = yield* (yield* ProviderRegistry.ProviderRegistry).getProviders;
-          startedRuntimeMode = yield* resolveRuntimeMode(startedRuntimeMode, input.runtimeMode, {
+          // exowatt: an explicit mode resolves against the caller's own mode, so a requested
+          // "auto" on a provider without one (phi) runs at the caller's mode, never approval-required.
+          const parentMode =
+            input.runtimeMode === undefined ? startedRuntimeMode : context.limits.runtimeMode;
+          startedRuntimeMode = yield* resolveRuntimeMode(parentMode, input.runtimeMode, {
             modelSelection,
             supportedRuntimeModes: providers.find(
               (provider) => provider.instanceId === modelSelection.instanceId,

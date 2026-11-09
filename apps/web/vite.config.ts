@@ -1,3 +1,5 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- build-time config; resolves the checkout sha synchronously at load.
+import * as NodeChildProcess from "node:child_process";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Vite config runs before any Effect runtime.
 import * as NodeFSP from "node:fs/promises";
 import * as NodeZlib from "node:zlib";
@@ -50,6 +52,23 @@ const configuredDesktopUpdateRepository =
   process.env.GITHUB_REPOSITORY?.trim() ||
   "";
 const configuredFeatureSecrets = process.env.T3CODE_FEATURE_SECRETS?.trim() || "";
+// exowatt: short sha of the checkout serving this build, shown next to the
+// version in dev so the running code is identifiable at a glance. The dev
+// launcher passes P3_DEV_GIT_SHA; otherwise ask git, and stay empty when
+// neither is available (packaged builds, no git).
+const configuredAppGitSha = (() => {
+  const explicit = process.env.P3_DEV_GIT_SHA?.trim();
+  if (explicit) return explicit;
+  try {
+    return NodeChildProcess.execFileSync("git", ["rev-parse", "--short", "HEAD"], {
+      cwd: import.meta.dirname,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+  } catch {
+    return "";
+  }
+})();
 const configuredHostedAppUrl = (() => {
   const explicitHostedAppUrl = process.env.VITE_HOSTED_APP_URL?.trim();
   if (explicitHostedAppUrl) {
@@ -100,6 +119,8 @@ const browserTestApiPort = 61_000 + ((Hash.string(import.meta.dirname) >>> 0) % 
 const browserTestProject = {
   extends: true,
   // Pre-bundle lazy browser and worker dependencies to avoid mid-run reloads.
+  // exowatt: the list also names dependencies only P3 code imports (connector and thread
+  // icons, pets, manifests); discovered mid-run they reload the tester iframe.
   optimizeDeps: {
     include: [
       "vite-plus/test/browser",
@@ -121,6 +142,10 @@ const browserTestProject = {
       "pdfjs-dist",
       "sql.js",
       "tiff",
+      "simple-icons",
+      "@fortawesome/free-solid-svg-icons",
+      "@zip.js/zip.js",
+      "zod",
     ],
   },
   test: {
@@ -136,6 +161,9 @@ const browserTestProject = {
       provider: playwright(),
       instances: [{ browser: "chromium" }],
       screenshotFailures: false,
+      // exowatt: PR Check shards this suite over 4-vCPU GitHub runners (upstream runs it on
+      // one 32-vCPU runner), where the cold transform can outlast the 60 s default.
+      connectTimeout: 180_000,
       commands: {
         // Playwright's mouse outlives each test, so whatever mounts under its last
         // position starts hovered. test/browserSetup.ts parks it off the page before each test.
@@ -320,6 +348,7 @@ export default defineConfig(() => {
       "import.meta.env.T3CODE_FEATURE_SECRETS": JSON.stringify(configuredFeatureSecrets),
       "import.meta.env.VITE_RELEASE_CHANNEL": JSON.stringify(configuredReleaseChannel),
       "import.meta.env.APP_VERSION": JSON.stringify(configuredAppVersion),
+      "import.meta.env.APP_GIT_SHA": JSON.stringify(configuredAppGitSha),
     },
     resolve: {
       tsconfigPaths: true,
@@ -394,7 +423,7 @@ export default defineConfig(() => {
       projects: [
         defineProject(unitTestProject),
         defineProject(browserTestProject),
-        defineProject(renderScenariosProject),
+        ...(process.env.T3CODE_RENDER_REPORT_DIR ? [defineProject(renderScenariosProject)] : []),
       ],
     },
   };

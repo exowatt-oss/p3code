@@ -204,6 +204,25 @@ it("builds the tree rehype-raw builds for markdown without HTML", () => {
   }
 });
 
+it("preserves P3 thread links (p3://thread/<id>) through the shared Markdown sanitizer", () => {
+  const processor = unified()
+    .use(remarkParse)
+    .use(CHAT_MARKDOWN_REMARK_PLUGINS)
+    .use(remarkRehype, { allowDangerousHtml: true })
+    .use(CHAT_MARKDOWN_REHYPE_PLUGINS);
+  const tree = processor.runSync(processor.parse("[Sibling](p3://thread/thread%3Aproject%3A1)"));
+  expect(tree.children[0]).toMatchObject({
+    tagName: "p",
+    children: [
+      {
+        tagName: "a",
+        properties: { href: "p3://thread/thread%3Aproject%3A1" },
+        children: [{ type: "text", value: "Sibling" }],
+      },
+    ],
+  });
+});
+
 it("keeps backslashes that CommonMark would read as escapes in prose Windows paths", () => {
   const processor = unified()
     .use(remarkParse)

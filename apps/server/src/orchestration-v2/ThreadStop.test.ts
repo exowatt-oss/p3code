@@ -3,6 +3,7 @@ import {
   CommandId,
   ContextTransferId,
   EventId,
+  type ExowattPeerInbound,
   MessageId,
   NodeId,
   type OrchestrationV2DomainEvent,
@@ -20,6 +21,7 @@ import {
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -28,6 +30,7 @@ import * as EventStore from "./EventStore.ts";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import { makePeerMessageId } from "../exowattPeerEnvironments/PeerGate.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { CLAUDE_PROVIDER } from "./Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
@@ -36,6 +39,7 @@ import { OrchestrationEffectRequestV2 } from "./EffectOutbox.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EffectOutbox from "./EffectOutbox.ts";
+import * as EventSink from "./EventSink.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
@@ -52,23 +56,29 @@ const adapter = {
   openSession: () => Effect.die("Runs here never reach a provider"),
 } as ProviderAdapter.ProviderAdapterV2["Service"];
 const layerDatabase = SqlitePersistence.layerMemory;
-const layerTest = ThreadManagementService.layer.pipe(
-  Layer.provideMerge(
-    Layer.mergeAll(
-      layerDatabase,
-      ProjectionStore.layer.pipe(Layer.provide(layerDatabase)),
-      EventStore.layer.pipe(Layer.provide(layerDatabase)),
-      EffectOutbox.layer.pipe(Layer.provide(layerDatabase)),
-      ProviderReplayHarness.layerWithRegistry(
-        { name: "thread-stop" },
-        ProviderAdapterRegistry.layerFromAdapters([adapter]),
-        { databaseLayer: layerDatabase, runEffectWorker: false },
+const layerWith = (exowattPeerInbound?: ExowattPeerInbound) =>
+  ThreadManagementService.layer.pipe(
+    Layer.provideMerge(
+      Layer.mergeAll(
+        layerDatabase,
+        ProjectionStore.layer.pipe(Layer.provide(layerDatabase)),
+        EventStore.layer.pipe(Layer.provide(layerDatabase)),
+        EffectOutbox.layer.pipe(Layer.provide(layerDatabase)),
+        ProviderReplayHarness.layerWithRegistry(
+          { name: "thread-stop" },
+          ProviderAdapterRegistry.layerFromAdapters([adapter]),
+          {
+            databaseLayer: layerDatabase,
+            runEffectWorker: false,
+            ...(exowattPeerInbound === undefined ? {} : { exowattPeerInbound }),
+          },
+        ),
       ),
     ),
-  ),
-  Layer.provideMerge(ServerSettings.layerTest()),
-  Layer.provideMerge(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
-);
+    Layer.provideMerge(ServerSettings.layerTest()),
+    Layer.provideMerge(CommandReceiptStore.layer.pipe(Layer.provide(layerDatabase))),
+  );
+const layerTest = layerWith();
 
 const encodeEffectRequest = Schema.encodeSync(Schema.fromJsonString(OrchestrationEffectRequestV2));
 
@@ -794,6 +804,167 @@ it.effect("a message the user sends after Stop releases the held queue; an agent
       "queued",
     ]);
   }).pipe(Effect.provide(layerTest)),
+);
+
+// The orchestrator does not gate sends, so these stand in for peer work queued before the gate
+// dropped or the thread was raised to full-access: it is refused as the held queue drains.
+it.effect.each([
+  ["off", ["interrupted", "cancelled", "starting"]],
+  ["auto-accept-edits", ["interrupted", "cancelled", "starting"]],
+  ["full-access", ["interrupted", "starting", "queued"]],
+] as const)("a held peer run is re-checked against inbound %s when it starts", ([inbound, runs]) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const threadId = ThreadId.make(`thread:peer-gate:${inbound}`);
+    yield* createWatchingThread(threadId, 8);
+    yield* send(threadId, "active", "start_immediately");
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make(`peer-send:${threadId}`),
+      threadId,
+      messageId: makePeerMessageId(`peer-gate-${inbound}`),
+      text: "from a linked environment",
+      attachments: [],
+      dispatchMode: { type: "queue_after_active" },
+      createdBy: "agent",
+      creationSource: "mcp",
+    });
+    yield* send(threadId, "local follow-up", "queue_after_active");
+    yield* orchestrator.dispatch({
+      type: "thread.stop",
+      commandId: CommandId.make(`stop:${threadId}`),
+      threadId,
+    });
+    assert.deepEqual((yield* threadState(threadId)).runs, [
+      "interrupted",
+      "queued:held",
+      "queued:held",
+    ]);
+    yield* orchestrator.dispatch({
+      type: "queue.resume",
+      commandId: CommandId.make(`resume:${threadId}`),
+      threadId,
+    });
+    assert.deepEqual((yield* threadState(threadId)).runs, [...runs]);
+  }).pipe(Effect.provide(layerWith(inbound))),
+);
+
+const peerSend = (threadId: ThreadId, name: string) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    yield* orchestrator.dispatch({
+      type: "message.dispatch",
+      commandId: CommandId.make(`peer-send:${threadId}:${name}`),
+      threadId,
+      messageId: makePeerMessageId(`${threadId}-${name}`),
+      text: `from a linked environment: ${name}`,
+      attachments: [],
+      dispatchMode: { type: "queue_after_active" },
+      createdBy: "agent",
+      creationSource: "mcp",
+    });
+  });
+
+it.effect(
+  "refused peer runs drain when the active run ends, and the local run behind them starts",
+  () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const eventSink = yield* EventSink.EventSinkV2;
+      const threadId = ThreadId.make("thread:peer-gate:ended");
+      yield* createWatchingThread(threadId, 9);
+      yield* send(threadId, "active", "start_immediately");
+      yield* peerSend(threadId, "first");
+      yield* peerSend(threadId, "second");
+      yield* send(threadId, "local follow-up", "queue_after_active");
+      const [active, , , local] = (yield* orchestrator.getThreadProjection(threadId)).runs;
+      const localStarted = yield* orchestrator
+        .streamStoredEventsFrom({ threadId, afterSequence: 0, eventType: "run.updated" })
+        .pipe(
+          Stream.filter(
+            (stored) =>
+              stored.event.type === "run.updated" &&
+              stored.event.runId === local!.id &&
+              stored.event.payload.status === "starting",
+          ),
+          Stream.runHead,
+          Effect.forkChild,
+        );
+      const now = yield* DateTime.now;
+      yield* eventSink.write({
+        commandId: CommandId.make("peer-gate-ended:completed"),
+        events: [
+          {
+            id: EventId.make("event:peer-gate-ended:completed"),
+            type: "run.updated",
+            threadId,
+            runId: active!.id,
+            occurredAt: now,
+            payload: { ...active!, status: "completed", startedAt: now, completedAt: now },
+          },
+        ],
+      });
+      yield* Fiber.join(localStarted);
+      assert.deepEqual((yield* threadState(threadId)).runs, [
+        "completed",
+        "cancelled",
+        "cancelled",
+        "starting",
+      ]);
+    }).pipe(Effect.provide(layerWith("off"))),
+);
+
+it.effect("starting a refused peer run by name starts nothing in its place", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const threadId = ThreadId.make("thread:peer-gate:explicit");
+    yield* createWatchingThread(threadId, 10);
+    yield* send(threadId, "active", "start_immediately");
+    yield* peerSend(threadId, "named");
+    yield* send(threadId, "local follow-up", "queue_after_active");
+    yield* orchestrator.dispatch({
+      type: "thread.stop",
+      commandId: CommandId.make(`stop:${threadId}`),
+      threadId,
+    });
+    const peer = (yield* orchestrator.getThreadProjection(threadId)).runs[1]!;
+    const error = yield* orchestrator
+      .dispatch({
+        type: "queued-run.start",
+        commandId: CommandId.make(`start:${threadId}`),
+        threadId,
+        runId: peer.id,
+      })
+      .pipe(Effect.flip);
+    assert.equal(error._tag, "OrchestratorDispatchError");
+    assert.include(String("cause" in error ? error.cause : ""), "peer gate refused");
+    const runs = (yield* threadState(threadId)).runs;
+    assert.deepEqual(runs.slice(0, 2), ["interrupted", "cancelled"]);
+    assert.match(runs[2]!, /^queued/);
+  }).pipe(Effect.provide(layerWith("off"))),
+);
+
+it.effect("a queued peer message cannot be promoted to steer while the gate refuses it", () =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const threadId = ThreadId.make("thread:peer-gate:steer");
+    yield* createWatchingThread(threadId, 11);
+    yield* send(threadId, "active", "start_immediately");
+    yield* peerSend(threadId, "steer");
+    const [active, peer] = (yield* orchestrator.getThreadProjection(threadId)).runs;
+    const error = yield* orchestrator
+      .dispatch({
+        type: "queued-message.promote-to-steer",
+        commandId: CommandId.make(`promote:${threadId}`),
+        threadId,
+        queuedRunId: peer!.id,
+        targetRunId: active!.id,
+      })
+      .pipe(Effect.flip);
+    assert.equal(error._tag, "OrchestratorDispatchError");
+    assert.include(String("cause" in error ? error.cause : ""), "peer gate refused");
+    assert.deepEqual((yield* threadState(threadId)).runs, ["starting", "queued"]);
+  }).pipe(Effect.provide(layerWith("off"))),
 );
 
 it.effect(

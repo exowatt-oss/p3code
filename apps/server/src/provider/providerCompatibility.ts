@@ -73,7 +73,10 @@ export function resolveProviderCompatibility(
         ? unprefixed?.replace(/^agy_acp_server_(\d+\.\d+\.\d+)$/, "$1")
         : driver === "muse"
           ? unprefixed?.replace(/^(\d+\.\d+\.\d+)-R\d+(?:\.\d+)?$/, "$1")
-          : unprefixed;
+          : driver === "phi"
+            ? // exowatt: Phi ships Exowatt builds as `<pi version>-exo.<n>`.
+              unprefixed?.replace(/^(\d+\.\d+\.\d+)-exo\.\d+$/, "$1")
+            : unprefixed;
   const status =
     stable && /^\d+\.\d+\.\d+$/.test(stable)
       ? (policy.ranges.find((entry) => satisfiesSemverRange(stable, entry.range))?.status ??

@@ -36,6 +36,11 @@ import { AdvancedSettings } from "./AdvancedSettings";
 import { PanelAnimationsPreview } from "./PanelAnimationsPreview";
 import { TypographySection } from "./TypographySettings";
 import { ThreadDetailsItemsRow } from "./ThreadDetailsItemsRow";
+import {
+  ExowattAccentSection,
+  ExowattStatusLightBlinkRow,
+  ExowattWorkspaceSections,
+} from "../exowatt-customize/ExowattAppearanceSections";
 
 const ENVIRONMENT_IDENTIFICATION_LABELS: Record<EnvironmentIdentificationMode, string> = {
   artwork: "Artwork",
@@ -161,6 +166,9 @@ export function AppearanceSettingsPanel() {
           />
         </div>
       </SettingsSection>
+
+      {/* exowatt: the optional P3 accent sits with the themes. */}
+      <ExowattAccentSection />
 
       <SettingsSection id="appearance-interface" title="Interface">
         <SettingsRow
@@ -355,6 +363,7 @@ export function AppearanceSettingsPanel() {
             // Environment identification's search result lands on this section.
             "appearance-interface",
             searchableSetting("composer-context").id,
+            searchableSetting("exowatt-status-light-blink").id,
           ]}
         >
           <SettingsRow
@@ -408,6 +417,8 @@ export function AppearanceSettingsPanel() {
               ) : null
             }
           />
+          {/* exowatt: P3's status-light blink sits with the other motion setting. */}
+          <ExowattStatusLightBlinkRow />
           <SettingsRow
             {...searchableSetting("environment-identification")}
             description={environmentIdentificationDescription}
@@ -481,6 +492,8 @@ export function AppearanceSettingsPanel() {
       </SettingsSection>
 
       <TypographySection />
+      {/* exowatt: P3's sidebar and chat options. */}
+      <ExowattWorkspaceSections />
     </SettingsPageContainer>
   );
 }

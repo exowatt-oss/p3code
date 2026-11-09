@@ -1,7 +1,7 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { AuthSessionId, ProjectId, RunId, ThreadId } from "@t3tools/contracts";
+import { AuthSessionId, ProjectId, ProviderInstanceId, RunId, ThreadId } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as NetService from "@t3tools/shared/Net";
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -21,6 +21,7 @@ import {
 } from "../serverRuntimeState.ts";
 import {
   readLatestMessages,
+  resolveThreadCliModelSelection,
   threadCommand,
   type ThreadTools,
   titleFromMessage,
@@ -291,4 +292,103 @@ it.effect("show returns a --messages count larger than one call can spread", () 
 it("titles from a long first line without splitting an emoji", () => {
   const title = titleFromMessage(`${"a".repeat(78)}😀 and the rest of a long first line`);
   assert.strictEqual(title, `${"a".repeat(78)}…`);
+});
+
+// exowatt: `t3 thread start --thinking-level` checks the provider cache before launching.
+it.layer(NodeServices.layer)("resolveThreadCliModelSelection", (it) => {
+  const makeCache = Effect.fn("test.makeProviderCache")(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const root = yield* fileSystem.makeTempDirectoryScoped({ prefix: "p3-thread-cli-" });
+    yield* fileSystem.writeFileString(
+      path.join(root, "phi.json"),
+      JSON.stringify({
+        instanceId: "phi",
+        driver: "phi",
+        enabled: true,
+        installed: true,
+        models: [
+          { slug: "default", capabilities: { optionDescriptors: [] } },
+          {
+            slug: "exowatt/fable",
+            capabilities: {
+              optionDescriptors: [
+                { id: "thinkingLevel", options: [{ id: "medium" }, { id: "high" }, { id: "max" }] },
+              ],
+            },
+          },
+        ],
+      }),
+    );
+    return root;
+  });
+  const failureDetail = <A, E extends { readonly message: string }, R>(
+    effect: Effect.Effect<A, E, R>,
+  ) =>
+    effect.pipe(
+      Effect.flip,
+      Effect.map((error) => error.message),
+    );
+
+  it.effect("inherits the project default and overrides its thinking level", () =>
+    Effect.gen(function* () {
+      const selection = yield* resolveThreadCliModelSelection({
+        cacheDir: yield* makeCache(),
+        projectDefault: {
+          instanceId: ProviderInstanceId.make("phi"),
+          model: "exowatt/fable",
+          options: [{ id: "thinkingLevel", value: "medium" }],
+        },
+        thinkingLevel: "high",
+      });
+      assert.deepStrictEqual(selection, {
+        instanceId: ProviderInstanceId.make("phi"),
+        model: "exowatt/fable",
+        options: [{ id: "thinkingLevel", value: "high" }],
+      });
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("requires an explicit provider and model when the project has no default", () =>
+    Effect.gen(function* () {
+      const detail = yield* failureDetail(
+        resolveThreadCliModelSelection({
+          cacheDir: yield* makeCache(),
+          projectDefault: null,
+          thinkingLevel: "high",
+        }),
+      );
+      assert.include(detail, "pass --provider and --model");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("rejects path-like provider instance ids before reading the cache", () =>
+    Effect.gen(function* () {
+      const detail = yield* failureDetail(
+        resolveThreadCliModelSelection({
+          cacheDir: yield* makeCache(),
+          projectDefault: null,
+          instanceId: "../../outside",
+          model: "exowatt/fable",
+          thinkingLevel: "high",
+        }),
+      );
+      assert.include(detail, "Invalid provider instance id");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("rejects a thinking level not advertised by the selected model", () =>
+    Effect.gen(function* () {
+      const detail = yield* failureDetail(
+        resolveThreadCliModelSelection({
+          cacheDir: yield* makeCache(),
+          projectDefault: null,
+          instanceId: "phi",
+          model: "exowatt/fable",
+          thinkingLevel: "xhigh",
+        }),
+      );
+      assert.include(detail, "does not support thinking level 'xhigh'");
+    }).pipe(Effect.scoped),
+  );
 });

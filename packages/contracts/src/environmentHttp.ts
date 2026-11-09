@@ -13,6 +13,7 @@ import {
   AuthAccessTokenResult,
   AuthBrowserSessionRequest,
   AuthBrowserSessionResult,
+  AuthClientSession,
   AuthCreatePairingCredentialInput,
   AuthMcpApprovalDecisionRequest,
   AuthMcpApprovalDetails,
@@ -72,6 +73,13 @@ import {
   OrchestrationV2ThreadHistoryPage,
   OrchestrationV2ThreadTranscript,
 } from "./orchestrationV2.ts";
+import {
+  ExowattPeerEnvironmentLink,
+  ExowattPeerEnvironmentLinkInput,
+  ExowattPeerEnvironmentList,
+  ExowattPeerEnvironmentParams,
+  ExowattPeerEnvironmentRemoveResult,
+} from "./exowattPeerEnvironments.ts";
 import { Project, ProjectMutation, ProjectSnapshot } from "./project.ts";
 import {
   PullRequestDiffInput,
@@ -124,6 +132,8 @@ export type EnvironmentAuthInvalidReason = typeof EnvironmentAuthInvalidReason.T
 
 export const EnvironmentOperationForbiddenReason = Schema.Literals([
   "current_session_revoke_not_allowed",
+  // exowatt: a linked environment's session (`p3-peer:` label) only works on `/mcp`.
+  "peer_session_mcp_only",
 ]);
 export type EnvironmentOperationForbiddenReason = typeof EnvironmentOperationForbiddenReason.Type;
 
@@ -144,6 +154,8 @@ export const EnvironmentInternalErrorReason = Schema.Literals([
   "orchestration_thread_snapshot_failed",
   "orchestration_thread_bounded_snapshot_failed",
   "orchestration_thread_history_failed",
+  // exowatt: the peer-environment link store.
+  "peer_environments_failed",
   "internal_error",
 ]);
 export type EnvironmentInternalErrorReason = typeof EnvironmentInternalErrorReason.Type;
@@ -218,7 +230,9 @@ export class EnvironmentOperationForbiddenError extends Schema.TaggedError<Envir
   }
 
   override get message(): string {
-    return `The environment refused this operation (${this.reason}).`;
+    return this.reason === "peer_session_mcp_only"
+      ? "This credential links another environment and only works on the /mcp endpoint."
+      : `The environment refused this operation (${this.reason}).`;
   }
 }
 
@@ -273,6 +287,7 @@ export type EnvironmentHttpCommonError = typeof EnvironmentHttpCommonError.Type;
 
 const EnvironmentAuthenticationErrors = [
   EnvironmentAuthInvalidError,
+  EnvironmentOperationForbiddenError,
   EnvironmentInternalError,
 ] as const;
 
@@ -493,7 +508,7 @@ export type T3ConnectTroubleshootingSection = (typeof T3_CONNECT_TROUBLESHOOTING
 
 /** Clients, the CLI, and server logs link here as "More info". */
 export function t3ConnectTroubleshootingUrl(section: T3ConnectTroubleshootingSection): string {
-  return `https://github.com/pingdotgg/t3code/blob/main/docs/user/t3-connect-troubleshooting.md#${section}`;
+  return `https://github.com/exowatt-oss/p3code/blob/oss/export/docs/user/t3-connect-troubleshooting.md#${section}`;
 }
 
 const REACHABILITY_SECTION = {
@@ -604,6 +619,15 @@ class EnvironmentAuthHttpApi extends HttpApiGroup.make("auth")
       headers: OptionalBearerHeaders,
       payload: AuthRevokePairingLinkInput,
       success: AuthPairingLinkRevokeResult,
+      error: EnvironmentScopedOperationErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  // exowatt: upstream dropped this read as unused; PeerEnvironmentLinkCoordinator lists sessions
+  // to revoke stale peer links.
+  .add(
+    HttpApiEndpoint.get("clients", "/api/auth/clients", {
+      headers: OptionalBearerHeaders,
+      success: Schema.Array(AuthClientSession),
       error: EnvironmentScopedOperationErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )
@@ -996,6 +1020,40 @@ class EnvironmentWebhooksHttpApi extends HttpApiGroup.make("webhooks")
   .add(HttpApiEndpoint.patch("webhookPatch", WEBHOOK_PATH, webhookEndpoint))
   .add(HttpApiEndpoint.get("webhookGet", WEBHOOK_PATH, webhookEndpoint)) {}
 
+// exowatt: links to the user's other environments for the Threads MCP tools. Every endpoint
+// needs `access:write`; `PUT` answers 409 while `exowattCrossEnvironmentAgentTools` is off.
+const ExowattPeerEnvironmentsErrors = [
+  EnvironmentHttpBadRequestError,
+  EnvironmentHttpConflictError,
+  EnvironmentScopeRequiredError,
+  EnvironmentInternalError,
+] as const;
+
+class ExowattPeerEnvironmentsHttpApi extends HttpApiGroup.make("exowattPeerEnvironments")
+  .add(
+    HttpApiEndpoint.get("list", "/api/exowatt/peer-environments", {
+      headers: OptionalBearerHeaders,
+      success: ExowattPeerEnvironmentList,
+      error: ExowattPeerEnvironmentsErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.put("upsert", "/api/exowatt/peer-environments", {
+      headers: OptionalBearerHeaders,
+      payload: ExowattPeerEnvironmentLinkInput,
+      success: ExowattPeerEnvironmentLink,
+      error: ExowattPeerEnvironmentsErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.delete("remove", "/api/exowatt/peer-environments/:environmentId", {
+      headers: OptionalBearerHeaders,
+      params: ExowattPeerEnvironmentParams,
+      success: ExowattPeerEnvironmentRemoveResult,
+      error: ExowattPeerEnvironmentsErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
 export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentMetadataHttpApi)
   .add(EnvironmentAuthHttpApi)
@@ -1005,4 +1063,5 @@ export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentProjectsHttpApi)
   .add(EnvironmentVoiceHttpApi)
   .add(EnvironmentConnectHttpApi)
-  .add(EnvironmentWebhooksHttpApi) {}
+  .add(EnvironmentWebhooksHttpApi)
+  .add(ExowattPeerEnvironmentsHttpApi) {}

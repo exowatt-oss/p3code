@@ -10,6 +10,7 @@ import { extractJsonObject, fromLenientJson } from "@t3tools/shared/schemaJson";
 import { satisfiesSemverRange } from "@t3tools/shared/semver";
 import * as Context from "effect/Context";
 import * as Digest from "effect/crypto/Digest";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
@@ -46,8 +47,15 @@ import {
 
 const DEFAULT_REMOTE_PORT = 3773;
 const REMOTE_PORT_SCAN_WINDOW = 200;
-const SSH_READY_TIMEOUT_MS = 20_000;
-const SSH_READY_PROBE_TIMEOUT_MS = 1_000;
+// The deadline starts when the tunnel process is spawned, so it also covers the
+// SSH handshake itself. On a ~1s RTT link (in-flight Wi-Fi over DERP) the
+// handshake alone takes ~8-11s, leaving too little room for a probe retry with
+// a 20s budget. A down host still fails fast via ConnectTimeout / tunnel exit.
+const SSH_READY_TIMEOUT_MS = 60_000;
+// A fresh forwarded SSH channel plus HTTP response can take several network RTTs.
+export const SSH_READY_PROBE_TIMEOUT_MS = 5_000;
+// The remote helper probes loopback on the server, not through the forwarded port.
+const REMOTE_READY_PROBE_TIMEOUT_MS = 1_000;
 const TUNNEL_SHUTDOWN_TIMEOUT_MS = 2_000;
 const TUNNEL_STDERR_TAIL_CHARS = 16_384;
 const REMOTE_READY_TIMEOUT_MS = 60_000;
@@ -60,6 +68,7 @@ const REMOTE_ARCHIVE_DOWNLOAD_SECONDS = 240;
 const REMOTE_ARCHIVE_LOCK_WAIT_SECONDS = 360;
 const REMOTE_ARCHIVE_LAUNCH_TIMEOUT_MS = 900_000;
 const REMOTE_REUSE_READY_TIMEOUT_MS = 2_000;
+const REVERSE_FORWARD_PREPARE_TIMEOUT_MS = 10_000;
 
 export interface RemoteT3RunnerOptions {
   readonly nodeScriptPath?: string | null;
@@ -68,18 +77,101 @@ export interface RemoteT3RunnerOptions {
   readonly releaseBaseUrl?: string | null;
 }
 
+/**
+ * Exowatt: runs on the remote (with the manager's SSH auth handling) before a
+ * server is launched, and may return an adjusted runner — e.g. one that points
+ * at a server build the hook just installed. Skipped while a live tunnel exists.
+ */
+export type SshPrepareRemoteRunner = (
+  target: DesktopSshEnvironmentTarget,
+  runner: RemoteT3RunnerOptions | undefined,
+  authOptions: SshAuth.SshAuthOptions,
+) => Effect.Effect<
+  RemoteT3RunnerOptions | undefined,
+  SshCommandError | SshInvalidTargetError | SshLaunchError,
+  ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
+>;
+
 export interface SshEnvironmentManagerOptions {
   readonly resolveCliRunner?: Effect.Effect<RemoteT3RunnerOptions>;
+  readonly prepareRemoteRunner?: SshPrepareRemoteRunner;
+  /**
+   * Exowatt: the local server each tunnel also forwards back to, so the remote can reach this
+   * machine's server (reverse peer links). Null, or omitted, adds no reverse forward.
+   */
+  readonly reverseForward?: Effect.Effect<ExowattReverseForwardTarget | null>;
+}
+
+/** Exowatt: this desktop's server, as the reverse forward's target. */
+export interface ExowattReverseForwardTarget {
+  readonly port: number;
+  /** Prefixes the remote socket's name, so a reconnect can clear this desktop's stale ones. */
+  readonly environmentId: string;
+}
+
+const REVERSE_SOCKET_ID_PATTERN = /^[A-Za-z0-9_-]{1,128}$/u;
+const REVERSE_SOCKET_DIR_PATTERN = /^\/[A-Za-z0-9._/-]+$/u;
+
+/**
+ * Exowatt: `-R` spec for the reverse forward. sshd binds a unix socket (mode 0600 under its
+ * default `StreamLocalBindMask`, in a 0700 directory) rather than a squattable TCP port.
+ */
+export function exowattReverseForwardSpec(socketPath: string, localPort: number): string {
+  return `${socketPath}:127.0.0.1:${localPort}`;
+}
+
+/**
+ * Exowatt: the remote socket path for one connection. The suffix is fresh per connection
+ * because sshd's default `StreamLocalBindUnlink no` refuses to bind over a stale socket.
+ */
+export function exowattReverseSocketPath(input: {
+  readonly directory: string;
+  readonly environmentId: string;
+  readonly nonce: string;
+}): string | null {
+  if (
+    !REVERSE_SOCKET_DIR_PATTERN.test(input.directory) ||
+    !REVERSE_SOCKET_ID_PATTERN.test(input.environmentId) ||
+    !/^[a-f0-9]{8,64}$/u.test(input.nonce)
+  ) {
+    return null;
+  }
+  return `${input.directory.replace(/\/+$/u, "")}/${input.environmentId}-${input.nonce}.sock`;
+}
+
+const REVERSE_SOCKET_NONCE_BYTES = 12;
+
+/**
+ * Exowatt: creates the remote's 0700 peer socket directory under its P3 home, clears this
+ * desktop's stale sockets (exactly `<environment id>-<24 hex>.sock`) there and prints the directory's absolute path.
+ */
+export const REMOTE_REVERSE_SOCKET_PREPARE_SCRIPT = `set -eu
+umask 077
+PEER_DIR="$HOME/.t3/peer"
+mkdir -p "$PEER_DIR"
+chmod 700 "$PEER_DIR"
+rm -f "$PEER_DIR/$1"-${"[0-9a-f]".repeat(REVERSE_SOCKET_NONCE_BYTES * 2)}.sock
+printf '%s\\n' "$PEER_DIR"
+`;
+
+/** Exowatt: sshd refused the reverse forward (e.g. `AllowStreamLocalForwarding no`). */
+export function isRemoteForwardFailure(stderr: string): boolean {
+  return /remote port forwarding failed/iu.test(stderr);
 }
 
 interface SshTunnelEntry {
   readonly key: string;
   readonly target: DesktopSshEnvironmentTarget;
+  // Runner the remote server was launched with; pairing must reuse it verbatim
+  // so the remote runner script does not change (which forces a relaunch).
+  readonly runner: RemoteT3RunnerOptions | undefined;
   readonly remotePort: number;
   readonly remoteServerKind: "external" | "managed" | null;
   readonly localPort: number;
   readonly httpBaseUrl: string;
   readonly wsBaseUrl: string;
+  /** Exowatt: this machine's server as the remote reaches it (`unix:<path>`), when forwarded. */
+  readonly reverseHttpBaseUrl: string | null;
   readonly process: ChildProcessSpawner.ChildProcessHandle;
   readonly scope: Scope.Closeable;
 }
@@ -87,6 +179,7 @@ interface SshTunnelEntry {
 type SshEnvironmentEffectContext =
   | ChildProcessSpawner.ChildProcessSpawner
   | Digest.Digest
+  | SecureRandom.SecureRandom
   | FileSystem.FileSystem
   | Path.Path
   | HttpClient.HttpClient
@@ -129,10 +222,15 @@ interface SshAuthAttemptInput<T> extends SshAuthOperationInput<T> {
   readonly authSecret: string | null;
 }
 
+export interface SshEnvironmentEnsureOptions {
+  readonly issuePairingToken?: boolean;
+  readonly probeTimeoutMs?: number;
+}
+
 export interface SshEnvironmentManagerShape {
   readonly ensureEnvironment: (
     target: DesktopSshEnvironmentTarget,
-    options?: { readonly issuePairingToken?: boolean },
+    options?: SshEnvironmentEnsureOptions,
   ) => Effect.Effect<
     DesktopSshEnvironmentBootstrap,
     SshEnvironmentEffectError,
@@ -141,7 +239,22 @@ export interface SshEnvironmentManagerShape {
   readonly disconnectEnvironment: (
     target: DesktopSshEnvironmentTarget,
   ) => Effect.Effect<void, SshEnvironmentEffectError, SshEnvironmentEffectContext>;
+  // Exowatt: one-off authenticated remote operation (no tunnel), e.g. stopping
+  // a stock T3 service so the P3 server can start (exowattRemoteServer.ts).
+  readonly runRemoteOperation: <T>(
+    target: DesktopSshEnvironmentTarget,
+    operation: SshRemoteOperation<T>,
+  ) => Effect.Effect<T, SshEnvironmentEffectError, SshEnvironmentEffectContext>;
 }
+
+export type SshRemoteOperation<T> = (
+  resolvedTarget: DesktopSshEnvironmentTarget,
+  authOptions: SshAuth.SshAuthOptions,
+) => Effect.Effect<
+  T,
+  SshCommandError | SshInvalidTargetError | SshLaunchError,
+  ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem | Path.Path
+>;
 
 const RemoteLaunchResult = Schema.Struct({
   remotePort: Schema.Number,
@@ -836,7 +949,7 @@ function buildRemoteLaunchScript(input?: RemoteT3RunnerOptions): string {
     T3_REMOTE_PORT_SCAN_WINDOW: String(REMOTE_PORT_SCAN_WINDOW),
     T3_READY_TIMEOUT_MS: String(REMOTE_READY_TIMEOUT_MS),
     T3_REUSE_READY_TIMEOUT_MS: String(REMOTE_REUSE_READY_TIMEOUT_MS),
-    T3_READY_PROBE_TIMEOUT_MS: String(SSH_READY_PROBE_TIMEOUT_MS),
+    T3_READY_PROBE_TIMEOUT_MS: String(REMOTE_READY_PROBE_TIMEOUT_MS),
   });
 }
 
@@ -1020,6 +1133,41 @@ const readRemoteServerLogTail = Effect.fn("ssh/tunnel.readRemoteServerLogTail")(
   return result.stdout.trim();
 });
 
+/**
+ * Exowatt: prepare the remote socket directory and pick this connection's socket path, or
+ * null when the remote's home path can't be used in a `-R` spec.
+ */
+const prepareReverseSocket = Effect.fn("ssh/tunnel.prepareReverseSocket")(function* (
+  target: DesktopSshEnvironmentTarget,
+  environmentId: string,
+  input?: SshAuth.SshAuthOptions,
+): Effect.fn.Return<
+  string | null,
+  SshCommandError | SshInvalidTargetError,
+  | ChildProcessSpawner.ChildProcessSpawner
+  | SecureRandom.SecureRandom
+  | FileSystem.FileSystem
+  | Path.Path
+> {
+  if (!REVERSE_SOCKET_ID_PATTERN.test(environmentId)) return null;
+  const result = yield* runSshCommand(target, {
+    remoteCommandArgs: ["sh", "-s", "--", environmentId],
+    stdin: REMOTE_REVERSE_SOCKET_PREPARE_SCRIPT,
+    timeoutMs: REVERSE_FORWARD_PREPARE_TIMEOUT_MS,
+    ...(input?.authSecret === undefined ? {} : { authSecret: input.authSecret }),
+    ...(input?.batchMode === undefined ? {} : { batchMode: input.batchMode }),
+    ...(input?.interactiveAuth === undefined ? {} : { interactiveAuth: input.interactiveAuth }),
+  });
+  const random = yield* SecureRandom.SecureRandom;
+  const bytes = yield* random.randomBytes(REVERSE_SOCKET_NONCE_BYTES);
+  const nonce = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+  return exowattReverseSocketPath({
+    directory: getLastNonEmptyOutputLine(result.stdout) ?? "",
+    environmentId,
+    nonce,
+  });
+});
+
 const waitForHttpReady = (input: {
   readonly baseUrl: string;
   readonly timeoutMs?: number;
@@ -1097,6 +1245,7 @@ const reserveLocalTunnelPort = Effect.fn("ssh/tunnel.reserveLocalTunnelPort")(fu
 });
 
 const startSshTunnel = Effect.fn("ssh/tunnel.startSshTunnel")(function* (input: {
+  readonly probeTimeoutMs: number;
   readonly key: string;
   readonly resolvedTarget: DesktopSshEnvironmentTarget;
   readonly remotePort: number;
@@ -1106,6 +1255,9 @@ const startSshTunnel = Effect.fn("ssh/tunnel.startSshTunnel")(function* (input: 
   readonly authOptions: SshAuth.SshAuthOptions;
   readonly remoteServerKind: "external" | "managed" | null;
   readonly scope: Scope.Closeable;
+  readonly runner?: RemoteT3RunnerOptions;
+  /** Exowatt: the remote socket and local port to forward back to, or null for none. */
+  readonly reverse: { readonly socketPath: string; readonly targetPort: number } | null;
 }): Effect.fn.Return<
   SshTunnelEntry,
   SshCommandError | SshInvalidTargetError | SshReadinessError,
@@ -1156,6 +1308,9 @@ const startSshTunnel = Effect.fn("ssh/tunnel.startSshTunnel")(function* (input: 
     "-N",
     "-L",
     `${input.localPort}:127.0.0.1:${input.remotePort}`,
+    ...(input.reverse === null
+      ? []
+      : ["-R", exowattReverseForwardSpec(input.reverse.socketPath, input.reverse.targetPort)]),
     "--",
     hostSpec,
   ];
@@ -1170,6 +1325,7 @@ const startSshTunnel = Effect.fn("ssh/tunnel.startSshTunnel")(function* (input: 
     remotePort: input.remotePort,
     remoteServerKind: input.remoteServerKind,
     httpBaseUrl: input.httpBaseUrl,
+    reverseSocketPath: input.reverse?.socketPath ?? null,
   });
   const child = yield* spawner
     .spawn(
@@ -1206,17 +1362,6 @@ const startSshTunnel = Effect.fn("ssh/tunnel.startSshTunnel")(function* (input: 
     remotePort: input.remotePort,
     httpBaseUrl: input.httpBaseUrl,
   });
-  const tunnelEntry: SshTunnelEntry = {
-    key: input.key,
-    target: input.resolvedTarget,
-    remotePort: input.remotePort,
-    remoteServerKind: input.remoteServerKind,
-    localPort: input.localPort,
-    httpBaseUrl: input.httpBaseUrl,
-    wsBaseUrl: input.wsBaseUrl,
-    process: child,
-    scope,
-  };
   // Readiness cancels the exit waiter, but diagnostics must drain until the tunnel closes.
   let stderrTail = "";
   const stderrDrain = yield* child.stderr.pipe(
@@ -1273,7 +1418,8 @@ const startSshTunnel = Effect.fn("ssh/tunnel.startSshTunnel")(function* (input: 
   yield* Effect.raceFirst(
     waitForHttpReady({
       baseUrl: input.httpBaseUrl,
-      timeoutMs: SSH_READY_TIMEOUT_MS,
+      timeoutMs: Math.max(SSH_READY_TIMEOUT_MS, input.probeTimeoutMs * 2),
+      probeTimeoutMs: input.probeTimeoutMs,
     }),
     exitFailure,
   ).pipe(
@@ -1327,6 +1473,16 @@ const startSshTunnel = Effect.fn("ssh/tunnel.startSshTunnel")(function* (input: 
         });
       }),
     ),
+    // exowatt: sshd answers the `-R` request before the probe's `-L` channel, and a refusal is
+    // fatal under ExitOnForwardFailure, so a tunnel still running once ready has its socket.
+    Effect.tap(() =>
+      input.reverse === null
+        ? Effect.void
+        : child.isRunning.pipe(
+            Effect.orElseSucceed(() => true),
+            Effect.flatMap((running) => (running ? Effect.void : exitFailure)),
+          ),
+    ),
     Effect.onExit((exit) =>
       Exit.isSuccess(exit)
         ? Effect.void
@@ -1338,7 +1494,19 @@ const startSshTunnel = Effect.fn("ssh/tunnel.startSshTunnel")(function* (input: 
             .pipe(Effect.ignore),
     ),
   );
-  return tunnelEntry;
+  return {
+    key: input.key,
+    target: input.resolvedTarget,
+    runner: input.runner,
+    remotePort: input.remotePort,
+    remoteServerKind: input.remoteServerKind,
+    localPort: input.localPort,
+    httpBaseUrl: input.httpBaseUrl,
+    wsBaseUrl: input.wsBaseUrl,
+    reverseHttpBaseUrl: input.reverse === null ? null : `unix:${input.reverse.socketPath}`,
+    process: child,
+    scope,
+  } satisfies SshTunnelEntry;
 });
 
 const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.make")(function* (
@@ -1501,6 +1669,7 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
   });
 
   const createTunnelEntry = Effect.fn("ssh/tunnel.ensureTunnelEntry.create")(function* (input: {
+    readonly probeTimeoutMs: number;
     readonly key: string;
     readonly resolvedTarget: DesktopSshEnvironmentTarget;
     readonly runner?: RemoteT3RunnerOptions;
@@ -1533,21 +1702,59 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
       remotePort,
     });
     const entryScope = yield* Scope.make("sequential");
+    const reverseTarget =
+      options.reverseForward === undefined ? null : yield* options.reverseForward;
     const tunnelEntry = yield* runWithSshAuth({
       key: input.key,
       target: input.resolvedTarget,
-      operation: (authOptions) =>
-        startSshTunnel({
-          key: input.key,
-          resolvedTarget: input.resolvedTarget,
-          remotePort,
-          localPort,
-          httpBaseUrl,
-          wsBaseUrl,
+      operation: (authOptions) => {
+        const start = (
+          reverse: { readonly socketPath: string; readonly targetPort: number } | null,
+        ) =>
+          startSshTunnel({
+            probeTimeoutMs: input.probeTimeoutMs,
+            key: input.key,
+            resolvedTarget: input.resolvedTarget,
+            remotePort,
+            localPort,
+            httpBaseUrl,
+            wsBaseUrl,
+            authOptions,
+            remoteServerKind: remoteLaunch.remoteServerKind,
+            scope: entryScope,
+            reverse,
+            ...(input.runner === undefined ? {} : { runner: input.runner }),
+          });
+        if (reverseTarget === null) return start(null);
+        // exowatt: a host that refuses remote forwards still gets its normal tunnel.
+        return prepareReverseSocket(
+          input.resolvedTarget,
+          reverseTarget.environmentId,
           authOptions,
-          remoteServerKind: remoteLaunch.remoteServerKind,
-          scope: entryScope,
-        }),
+        ).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("ssh.tunnel.reverseForward.prepareFailed", {
+              ...sshTargetLogFields(input.resolvedTarget),
+              key: input.key,
+              error: error.message,
+            }).pipe(Effect.as(null)),
+          ),
+          Effect.flatMap((socketPath) =>
+            socketPath === null
+              ? start(null)
+              : start({ socketPath, targetPort: reverseTarget.port }),
+          ),
+          Effect.catchIf(
+            (error) => error._tag === "SshCommandError" && isRemoteForwardFailure(error.stderr),
+            (error) =>
+              Effect.logWarning("ssh.tunnel.reverseForward.refused", {
+                ...sshTargetLogFields(input.resolvedTarget),
+                key: input.key,
+                stderr: error._tag === "SshCommandError" ? error.stderr : "",
+              }).pipe(Effect.andThen(start(null))),
+          ),
+        );
+      },
     }).pipe(
       Effect.onExit((exit) =>
         Exit.isSuccess(exit) ? Effect.void : Scope.close(entryScope, Exit.void).pipe(Effect.ignore),
@@ -1616,45 +1823,68 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
     return tunnelEntry;
   });
 
+  const checkExistingTunnelEntry = Effect.fn("ssh/tunnel.checkExistingTunnelEntry")(function* (
+    key: string,
+    resolvedTarget: DesktopSshEnvironmentTarget,
+    probeTimeoutMs: number,
+  ): Effect.fn.Return<
+    SshTunnelEntry | null,
+    SshEnvironmentEffectError,
+    SshEnvironmentEffectContext
+  > {
+    const entry = tunnels.get(key) ?? null;
+    if (entry === null) {
+      return null;
+    }
+
+    yield* Effect.logDebug("ssh.environment.tunnel.existing.check", {
+      ...sshTargetLogFields(resolvedTarget),
+      key,
+      localPort: entry.localPort,
+      remotePort: entry.remotePort,
+    });
+    const readinessExit = yield* Effect.exit(
+      waitForHttpReady({
+        baseUrl: entry.httpBaseUrl,
+        timeoutMs: Math.max(2_000, probeTimeoutMs * 2),
+        probeTimeoutMs,
+      }),
+    );
+    if (Exit.isSuccess(readinessExit)) {
+      yield* Effect.logDebug("ssh.environment.tunnel.reused", {
+        ...sshTargetLogFields(resolvedTarget),
+        key,
+        localPort: entry.localPort,
+        remotePort: entry.remotePort,
+      });
+      return entry;
+    }
+    yield* Effect.logWarning("ssh.environment.tunnel.existing.stale", {
+      ...sshTargetLogFields(resolvedTarget),
+      key,
+      localPort: entry.localPort,
+      remotePort: entry.remotePort,
+      cause: readinessExit.cause,
+    });
+    // Closing a stale forward must not run the manager-owned remote stop.
+    tunnels.delete(key);
+    yield* closeTunnelEntry(entry);
+    return null;
+  });
+
   const ensureTunnelEntry = Effect.fn("ssh/tunnel.ensureTunnelEntry")(function* (
     key: string,
     resolvedTarget: DesktopSshEnvironmentTarget,
+    probeTimeoutMs: number,
     runner?: RemoteT3RunnerOptions,
+    existingEntry?: SshTunnelEntry | null,
   ): Effect.fn.Return<SshTunnelEntry, SshEnvironmentEffectError, SshEnvironmentEffectContext> {
-    const entry = tunnels.get(key) ?? null;
-
-    if (entry !== null) {
-      yield* Effect.logDebug("ssh.environment.tunnel.existing.check", {
-        ...sshTargetLogFields(resolvedTarget),
-        key,
-        localPort: entry.localPort,
-        remotePort: entry.remotePort,
-      });
-      const readinessExit = yield* Effect.exit(
-        waitForHttpReady({ baseUrl: entry.httpBaseUrl, timeoutMs: 2_000 }),
-      );
-      if (Exit.isSuccess(readinessExit)) {
-        yield* Effect.logDebug("ssh.environment.tunnel.reused", {
-          ...sshTargetLogFields(resolvedTarget),
-          key,
-          localPort: entry.localPort,
-          remotePort: entry.remotePort,
-        });
-        return entry;
-      }
-      yield* Effect.logWarning("ssh.environment.tunnel.existing.stale", {
-        ...sshTargetLogFields(resolvedTarget),
-        key,
-        localPort: entry.localPort,
-        remotePort: entry.remotePort,
-        cause: readinessExit.cause,
-      });
-      // Closing a stale forward must not run the manager-owned remote stop.
-      tunnels.delete(key);
-      yield* closeTunnelEntry(entry);
+    if (existingEntry !== undefined && existingEntry !== null) {
+      return existingEntry;
     }
 
     return yield* createTunnelEntry({
+      probeTimeoutMs,
       key,
       resolvedTarget,
       ...(runner === undefined ? {} : { runner }),
@@ -1671,7 +1901,7 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
 
   const ensureEnvironment = Effect.fn("ssh/tunnel.ensureEnvironment")(function* (
     target: DesktopSshEnvironmentTarget,
-    requestOptions?: { readonly issuePairingToken?: boolean },
+    requestOptions?: SshEnvironmentEnsureOptions,
   ): Effect.fn.Return<
     DesktopSshEnvironmentBootstrap,
     SshEnvironmentEffectError,
@@ -1692,17 +1922,44 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
       ...sshTargetLogFields(resolvedTarget),
       key,
     });
-    const runner =
+    const resolvedRunner =
       options.resolveCliRunner === undefined ? undefined : yield* options.resolveCliRunner;
-    yield* Effect.logDebug("ssh.environment.runner.resolved", {
-      ...sshTargetLogFields(resolvedTarget),
-      ...sshRunnerLogFields(runner),
-      key,
-    });
     return yield* withTargetLock(
       key,
       Effect.gen(function* () {
-        const entry = yield* ensureTunnelEntry(key, resolvedTarget, runner);
+        // Exowatt: probe the cached entry before reusing its runner. A tunnel
+        // can survive in this map after its SSH process died, while the remote
+        // runner may have a staged exact-version upgrade waiting to be used.
+        const probeTimeoutMs = Math.max(
+          SSH_READY_PROBE_TIMEOUT_MS,
+          requestOptions?.probeTimeoutMs ?? 0,
+        );
+        const existingEntry = yield* checkExistingTunnelEntry(key, resolvedTarget, probeTimeoutMs);
+        const liveRunner = existingEntry?.runner;
+        const prepareRemoteRunner = options.prepareRemoteRunner;
+        const runner =
+          prepareRemoteRunner === undefined
+            ? resolvedRunner
+            : liveRunner !== undefined
+              ? liveRunner
+              : yield* runWithSshAuth({
+                  key,
+                  target: resolvedTarget,
+                  operation: (authOptions) =>
+                    prepareRemoteRunner(resolvedTarget, resolvedRunner, authOptions),
+                });
+        yield* Effect.logDebug("ssh.environment.runner.resolved", {
+          ...sshTargetLogFields(resolvedTarget),
+          ...sshRunnerLogFields(runner),
+          key,
+        });
+        const entry = yield* ensureTunnelEntry(
+          key,
+          resolvedTarget,
+          probeTimeoutMs,
+          runner,
+          existingEntry,
+        );
 
         const pairingResult = requestOptions?.issuePairingToken
           ? yield* runWithSshAuth({
@@ -1729,6 +1986,7 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
           pairingToken,
           remotePort: entry.remotePort,
           ...(entry.remoteServerKind ? { remoteServerKind: entry.remoteServerKind } : {}),
+          ...(entry.reverseHttpBaseUrl ? { reverseHttpBaseUrl: entry.reverseHttpBaseUrl } : {}),
         };
       }),
     );
@@ -1774,11 +2032,29 @@ const makeSshEnvironmentManager = Effect.fn("ssh/tunnel.SshEnvironmentManager.ma
     );
   });
 
-  return SshEnvironmentManager.of({ ensureEnvironment, disconnectEnvironment });
+  // Exowatt: see SshEnvironmentManagerShape.runRemoteOperation.
+  const runRemoteOperation = Effect.fn("ssh/tunnel.runRemoteOperation")(function* <T>(
+    target: DesktopSshEnvironmentTarget,
+    operation: SshRemoteOperation<T>,
+  ): Effect.fn.Return<T, SshEnvironmentEffectError, SshEnvironmentEffectContext> {
+    const baseResolved = yield* resolveSshTarget(target.alias || target.hostname);
+    const resolvedTarget: DesktopSshEnvironmentTarget = {
+      ...baseResolved,
+      ...(target.username !== null ? { username: target.username } : {}),
+      ...(target.port !== null ? { port: target.port } : {}),
+    };
+    return yield* runWithSshAuth({
+      key: targetConnectionKey(resolvedTarget),
+      target: resolvedTarget,
+      operation: (authOptions) => operation(resolvedTarget, authOptions),
+    });
+  });
+
+  return SshEnvironmentManager.of({ ensureEnvironment, disconnectEnvironment, runRemoteOperation });
 });
 
 /**
- * @effect-expect-leaking ChildProcessSpawner | Digest | FileSystem | HttpClient | NetService | Path | SshPasswordPrompt
+ * @effect-expect-leaking ChildProcessSpawner | Digest | FileSystem | HttpClient | NetService | Path | SecureRandom | SshPasswordPrompt
  */
 export class SshEnvironmentManager extends Context.Service<
   SshEnvironmentManager,

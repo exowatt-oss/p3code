@@ -136,6 +136,7 @@ import { useActiveThreadRef } from "../hooks/useActiveThreadRef";
 import { composerRequiresModifier } from "../composer-logic";
 import {
   derivePhase,
+  deriveLatestWorkspaceState,
   deriveActiveWorkStartedAt,
   deriveCanInterruptRunningThread,
   findLatestProposedPlan,
@@ -349,6 +350,8 @@ import { useLocalStorage } from "~/hooks/useLocalStorage";
 import { useComposerHandleContext } from "../composerHandleContext";
 import { clampFileAttachmentUploadBytes } from "@t3tools/client-runtime/state/attachments";
 import { appAtomRegistry } from "../rpc/atomRegistry";
+// exowatt: P3 pets follow the active thread's activity.
+import { useP3PetActivity } from "./exowatt-pets/useP3PetActivity";
 import { assetEnvironment } from "../state/assets";
 import { readEnvironmentScope, readPreparedConnection } from "../state/session";
 import { useAtomCommand } from "../state/use-atom-command";
@@ -531,6 +534,10 @@ export default function ChatView(props: ChatViewProps) {
     activeProviderThread,
   );
   const serverVisibleTurnItems = useQuietThreadVisibleTurnItems(routeThreadDetailRef);
+  const latestWorkspaceState = deriveLatestWorkspaceState(
+    serverVisibleTurnItems,
+    serverProjection?.providerTurns.at(-1)?.id ?? null,
+  );
   const serverThreadHistory = useThreadHistory(routeThreadDetailRef);
   const threadHistoryControls = (() => {
     if (routeThreadDetailRef === null || !shouldShowLoadEarlierControl(serverThreadHistory)) {
@@ -1099,6 +1106,16 @@ export default function ChatView(props: ChatViewProps) {
   const [threadPanelPopoverHandle] = useState(PopoverCreateHandle);
   const [chatCanvasStore] = useState(createChatCanvasStore);
 
+  // exowatt: a thread with no panel state of its own opens on the Hub (when the user opted in)
+  // once it exists on the server. Inline layout only: the narrow sheet would hide the thread.
+  // A side chat guest shows its host's panel, so it never opens a Hub of its own.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- syncs the panel store with route changes
+  useEffect(() => {
+    if (!activeThreadRef || !isServerThread || shouldUsePlanSidebarSheet || embedded) {
+      return;
+    }
+    useRightPanelStore.getState().openDefaultSurface(activeThreadRef);
+  }, [activeThreadRef, isServerThread, shouldUsePlanSidebarSheet, embedded]);
   const latestRunSettled = isLatestRunSettled(activeLatestRun, activeRuntime);
   const activeThreadEnvironmentId = activeThread?.environmentId;
   const activeThreadProjectId = activeThread?.projectId;
@@ -1462,6 +1479,16 @@ export default function ChatView(props: ChatViewProps) {
     (compactionRunning || (compactRequestIsActive && !compactionSettled));
   const isWorking =
     phase === "running" || isSendBusy || isCompacting || runlessWorkStartedAt !== null;
+  // exowatt: drive the P3 pet from the v2 run/runtime state.
+  useP3PetActivity({
+    threadKey: routeThreadKey,
+    isWorking,
+    hasPendingApproval: pendingApprovals.length > 0,
+    hasPendingUserInput: pendingUserInputs.length > 0,
+    latestTurnOutcome: activeLatestRun?.status ?? null,
+    completedAt: activeLatestRun?.completedAt ?? null,
+    hasThreadError: Boolean(threadError),
+  });
   const activeContextWindow = deriveLatestContextWindowSnapshot(
     serverVisibleTurnItems ?? [],
     activeThreadLiveTokenUsage,
@@ -2324,6 +2351,7 @@ export default function ChatView(props: ChatViewProps) {
     showScrollToBottom,
   ]);
   const openPanelPullRequestUrl = useOpenPanelPullRequestUrl(activeThreadRef);
+  // exowatt: client-runtime's resolver copies the thread as P3 Markdown (`[title](p3://thread/<id>)`).
   const activeThreadReferenceCopyTarget =
     activeThreadRef === null || !isServerThread
       ? null
@@ -2352,6 +2380,8 @@ export default function ChatView(props: ChatViewProps) {
     addDeviceSurfaceStable,
     addDiffSurfaceStable,
     addFilesSurfaceStable,
+    addHubSurfaceStable,
+    hubSurfaceAvailable,
     addPullRequestSurfaceStable,
     addPullRequestsSurfaceStable,
     closePreviewPanelStable,
@@ -2622,6 +2652,8 @@ export default function ChatView(props: ChatViewProps) {
     const limitRecoveryItems = limitRecoveryBanner === null ? [] : [limitRecoveryBanner];
     const extensionStatusBanner = extensionStatusBannerItem(
       deriveProviderExtensionStatuses(serverProjection),
+      // exowatt: shortcut: Phi by instance id prefix, read the driver kind if Phi instances get renamed.
+      serverProjection?.thread.modelSelection.instanceId.startsWith("phi") ? "Phi" : "Pi",
     );
     const extensionStatusItems = extensionStatusBanner === null ? [] : [extensionStatusBanner];
     const usageLimitsItems = usageLimitsBanner === null ? [] : [usageLimitsBanner];
@@ -3274,6 +3306,15 @@ export default function ChatView(props: ChatViewProps) {
         onOpenFile: openFileSurfaceStable,
         onPendingChange: handleFilePendingChangeStable,
       }}
+      hub={{
+        available: isServerThread,
+        onOpenFile: openFileSurfaceStable,
+        onOpenDiff: isGitRepo ? addDiffSurfaceStable : undefined,
+        pathRoots: {
+          worktreePath: activeThreadShell?.worktreePath ?? null,
+          projectRoot: activeProject?.workspaceRoot ?? null,
+        },
+      }}
     />
   ) : null;
   const panelToggleControlProps = {
@@ -3363,6 +3404,7 @@ export default function ChatView(props: ChatViewProps) {
             {!rightPanelControlsAtRoot && !rightPanelControlsInPanel ? panelLayoutControls : null}
             {inlineRightPanelOwnsTitleBar ? threadPanelHeaderControl : null}
             <ChatHeader
+              latestWorkspaceState={latestWorkspaceState}
               activeThreadEnvironmentId={activeThread.environmentId}
               activeThreadId={activeThread.id}
               isServerThread={isServerThread}
@@ -3721,6 +3763,7 @@ export default function ChatView(props: ChatViewProps) {
                                 contextWindowEntries={serverVisibleTurnItems}
                                 contextWindowLiveUsage={activeThreadLiveTokenUsage}
                                 contextWindowProviderThread={activeProviderThread}
+                                contextWindowProviderTurns={serverProjection?.providerTurns ?? []}
                                 compactThreadUnavailable={compactThreadUnavailable}
                                 compactDisabled={compactDisabled}
                                 compactDisabledReason={compactDisabledReason}
@@ -4036,6 +4079,8 @@ export default function ChatView(props: ChatViewProps) {
           onAddFiles={addFilesSurfaceStable}
           onAddPullRequest={addPullRequestSurfaceStable}
           onAddPullRequests={addPullRequestsSurfaceStable}
+          onAddHub={addHubSurfaceStable}
+          hubAvailable={hubSurfaceAvailable}
           onAddDevice={addDeviceSurfaceStable}
           onAddSideChat={sideChatsOffered ? openSideChatStable : undefined}
           browserAvailable={canOperatePreview && browserAvailable}

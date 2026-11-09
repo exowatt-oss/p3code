@@ -140,6 +140,46 @@ describe("browser API CORS", () => {
       await dispose();
     }
   });
+
+  it.each(["PUT", "DELETE"] as const)(
+    "allows %s preflights from the desktop renderer for the peer-environments routes",
+    async (method) => {
+      const layerRoute = Layer.effectDiscard(
+        Effect.gen(function* () {
+          const router = yield* HttpRouter.HttpRouter;
+          yield* router.add(method, "/api/exowatt/peer-environments", HttpServerResponse.empty());
+        }),
+      );
+      const layerApp = Layer.merge(layerRoute, ServerHttp.layerBrowserApiCors).pipe(
+        Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "http-cors-test-" })),
+        Layer.provide(NodeServices.layer),
+      );
+      const { handler, dispose } = HttpRouter.toWebHandler(layerApp, { disableLogger: true });
+
+      try {
+        const response = await handler(
+          new Request("https://backend.example/api/exowatt/peer-environments", {
+            method: "OPTIONS",
+            headers: {
+              origin: "t3code://app",
+              "access-control-request-method": method,
+              "access-control-request-headers": ["authorization", "dpop"].join(", "),
+            },
+          }),
+        );
+
+        expect(response.status).toBe(204);
+        const allowedMethods = new Set(
+          (response.headers.get("access-control-allow-methods") ?? "")
+            .split(",")
+            .map((allowed) => allowed.trim().toUpperCase()),
+        );
+        expect(allowedMethods.has(method)).toBe(true);
+      } finally {
+        await dispose();
+      }
+    },
+  );
 });
 
 describe("untraced requests", () => {

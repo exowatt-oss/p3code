@@ -57,7 +57,16 @@ export const DesktopConfig = Config.all({
   ),
   desktopLauncherPath: trimmedString("T3CODE_DESKTOP_LAUNCHER_PATH"),
   appImagePath: trimmedString("APPIMAGE"),
-  disableAutoUpdate: optionalBoolean("T3CODE_DISABLE_AUTO_UPDATE"),
+  // Keep the upstream signed Electron updater disabled in the unsigned P3
+  // distro. P3's update transport has its own independent emergency switch.
+  disableAutoUpdate: Config.Boolean("T3CODE_DISABLE_AUTO_UPDATE").pipe(
+    Config.option,
+    Config.map(Option.getOrElse(() => true)),
+  ),
+  disableP3AutoUpdate: Config.Boolean("P3CODE_DISABLE_AUTO_UPDATE").pipe(
+    Config.option,
+    Config.map(Option.getOrElse(() => false)),
+  ),
   mockUpdates: optionalBoolean("T3CODE_DESKTOP_MOCK_UPDATES"),
   mockUpdateServerPort: Config.Port("T3CODE_DESKTOP_MOCK_UPDATE_SERVER_PORT").pipe(
     Config.withDefault(3000),

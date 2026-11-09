@@ -10,6 +10,11 @@ const repoEnv = loadRepoEnv();
 const isMainProcessExternal = (id: string) =>
   id === "electron" || id.startsWith("electron/") || isDesktopRuntimeExternalDependency(id);
 const shouldLaunchElectronAfterPack = process.env.T3CODE_DESKTOP_DEV === "1";
+// exowatt: a live P3 Code Dev launcher keeps
+// apps/server/dist fresh with its own `vp pack --watch`, and the renderer comes
+// from the Vite dev server, so the one-shot `t3#build` (a full production web
+// build plus server bundle) is dead weight on every launch. Skip it in live mode.
+const isLiveDev = process.env.T3CODE_DESKTOP_LIVE === "1";
 const publicConfigDefine = {
   __T3CODE_BUILD_CLERK_PUBLISHABLE_KEY__: JSON.stringify(
     repoEnv.T3CODE_CLERK_PUBLISHABLE_KEY?.trim() ?? "",
@@ -34,7 +39,7 @@ export default defineConfig({
       dev: {
         command:
           "node scripts/build-browser-secret.mjs && node scripts/build-preview-annotation-css.mjs && cross-env T3CODE_DESKTOP_DEV=1 vp pack --watch",
-        dependsOn: ["t3#build"],
+        dependsOn: isLiveDev ? [] : ["t3#build"],
         cache: false,
       },
       "dev:bundle": {

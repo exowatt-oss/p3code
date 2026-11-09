@@ -1,5 +1,9 @@
 import { RegistryContext } from "@effect/atom-react";
-import { AuthSessionState, type EnvironmentId } from "@t3tools/contracts";
+import {
+  AuthSessionState,
+  type EnvironmentId,
+  type ServerSelfUpdateCapability,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -179,6 +183,28 @@ describe("ServerUpdateAction", () => {
     await click(screen, "Update");
     expect(testState.updateServer).not.toHaveBeenCalled();
   });
+
+  // exowatt: P3 servers never get stock `t3` from npm; they update from the P3 desktop app.
+  it.each([
+    [null, "0.1.1-exowatt.2", "0.1.1-exowatt.3"],
+    [null, "0.0.0-dev.61e39a3", "0.1.1"],
+    ["boot-service", "0.1.1-exowatt.2", "0.1.1-exowatt.3"],
+  ] satisfies ReadonlyArray<readonly [ServerSelfUpdateCapability | null, string, string]>)(
+    "points a %s P3 server at the P3 desktop app instead of npm",
+    async (selfUpdate, serverVersion, targetVersion) => {
+      using _state = setup();
+      await using screen = await renderAction({
+        selfUpdate,
+        serverVersion,
+        targetVersion,
+        installation: { kind: "npx" },
+      });
+      expect(button(screen)).toBeUndefined();
+      expect(screen.container.textContent).toBe("P3 servers update from the P3 Code desktop app.");
+      expect(testState.clipboard).not.toHaveBeenCalled();
+      expect(testState.updateServer).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("ServerUpdatesAction", () => {

@@ -8,6 +8,7 @@ import * as NodeVM from "node:vm";
 import { assert, describe, it } from "vite-plus/test";
 
 import {
+  APP_BUNDLE_ID,
   makeDevelopmentEnvironmentScript,
   makeDevelopmentLauncherScript,
   resolveElectronBinaryPath,
@@ -16,6 +17,10 @@ import {
 } from "./electron-launcher.mjs";
 
 describe("electron development launcher", () => {
+  it("uses the dedicated P3 identity for production launches", () => {
+    assert.equal(APP_BUNDLE_ID, "com.exowatt.p3code");
+  });
+
   it("uses captured values only as fallbacks for a live runner environment", () => {
     const environmentScript = makeDevelopmentEnvironmentScript({
       VITE_DEV_SERVER_URL: "http://127.0.0.1:8526",
@@ -54,6 +59,48 @@ describe("electron development launcher", () => {
     );
   });
 
+  it("carries the exowatt dev-launcher settings into Dock relaunches", () => {
+    const script = makeDevelopmentEnvironmentScript({
+      T3CODE_DEV_INSTANCE: "p3code-dev",
+      T3CODE_DESKTOP_KEYCHAIN_APP_NAME: "t3code",
+    });
+
+    assert.include(
+      script,
+      "if [ -z \"${T3CODE_DEV_INSTANCE:-}\" ]; then export T3CODE_DEV_INSTANCE='p3code-dev'; fi",
+    );
+    assert.include(
+      script,
+      "if [ -z \"${T3CODE_DESKTOP_KEYCHAIN_APP_NAME:-}\" ]; then export T3CODE_DESKTOP_KEYCHAIN_APP_NAME='t3code'; fi",
+    );
+    assert.notInclude(makeDevelopmentEnvironmentScript({}), "T3CODE_DESKTOP_KEYCHAIN_APP_NAME");
+  });
+
+  it("hands Dock/Spotlight starts to the P3 Code Dev launcher app when one is known", () => {
+    const script = makeDevelopmentEnvironmentScript({
+      VITE_DEV_SERVER_URL: "http://127.0.0.1:5733",
+      T3CODE_DEV_RELAUNCH_APP: "/Applications/P3 Code Dev.app",
+    });
+    const lines = script.split("\n");
+
+    // The hand-off is keyed on the dev-runner environment being absent, so it
+    // must run before the baked VITE_DEV_SERVER_URL fallback is exported.
+    const shimIndex = lines.findIndex((line) => line.includes("/usr/bin/open -a"));
+    const fallbackIndex = lines.findIndex((line) => line.includes("export VITE_DEV_SERVER_URL="));
+    assert.equal(shimIndex, 0);
+    assert.isBelow(shimIndex, fallbackIndex);
+    assert.equal(
+      lines[shimIndex],
+      "if [ -z \"${VITE_DEV_SERVER_URL:-}\" ] && [ -d '/Applications/P3 Code Dev.app' ]; then exec /usr/bin/open -a '/Applications/P3 Code Dev.app'; fi",
+    );
+
+    assert.notInclude(makeDevelopmentEnvironmentScript({}), "/usr/bin/open");
+    assert.notInclude(
+      makeDevelopmentEnvironmentScript({ T3CODE_DEV_RELAUNCH_APP: "/not/an/app/bundle" }),
+      "/usr/bin/open",
+    );
+  });
+
   it("repairs Electron before loading the package entrypoint", () => {
     const calls = [];
     const electronPath = resolveElectronBinaryPath({
@@ -76,18 +123,18 @@ describe("electron development launcher", () => {
 
   it("keeps the native Electron executable name inside the branded macOS bundle", () => {
     const paths = resolveMacLauncherPaths(
-      "/repo/apps/desktop/.electron-runtime/T3 Code (Dev).app",
-      "T3 Code (Dev)",
+      "/repo/apps/desktop/.electron-runtime/P3 Code (Dev).app",
+      "P3 Code (Dev)",
     );
 
-    assert.equal(paths.launcherExecutableName, "T3 Code (Dev) Launcher");
+    assert.equal(paths.launcherExecutableName, "P3 Code (Dev) Launcher");
     assert.equal(
       paths.launcherBinaryPath,
-      "/repo/apps/desktop/.electron-runtime/T3 Code (Dev).app/Contents/MacOS/T3 Code (Dev) Launcher",
+      "/repo/apps/desktop/.electron-runtime/P3 Code (Dev).app/Contents/MacOS/P3 Code (Dev) Launcher",
     );
     assert.equal(
       paths.runtimeElectronBinaryPath,
-      "/repo/apps/desktop/.electron-runtime/T3 Code (Dev).app/Contents/MacOS/Electron",
+      "/repo/apps/desktop/.electron-runtime/P3 Code (Dev).app/Contents/MacOS/Electron",
     );
 
     const script = makeDevelopmentLauncherScript({
@@ -98,7 +145,7 @@ describe("electron development launcher", () => {
     });
     assert.include(
       script,
-      "exec '/repo/apps/desktop/.electron-runtime/T3 Code (Dev).app/Contents/MacOS/Electron'",
+      "exec '/repo/apps/desktop/.electron-runtime/P3 Code (Dev).app/Contents/MacOS/Electron'",
     );
     assert.notInclude(script, "node_modules/electron");
   });

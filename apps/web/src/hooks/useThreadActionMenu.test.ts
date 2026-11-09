@@ -48,6 +48,8 @@ vi.mock("../state/session", () => ({
 }));
 vi.mock("../state/entities", () => ({
   readEnvironmentServerConfigLoaded: () => true,
+  loadThreadProjection: async () => ({ providerSessions: [] }),
+  readLoadedThreadProjection: () => ({ providerSessions: [] }),
   readEnvironmentSupportsAutoSettleOptOut: () => true,
   readThreadShell: () => ({
     id: "thread",

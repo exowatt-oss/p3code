@@ -23,15 +23,18 @@ import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopWslEnvironment from "../wsl/DesktopWslEnvironment.ts";
 import * as DesktopWslServerTree from "../wsl/DesktopWslServerTree.ts";
 
-const layerShellEnvironment = (prepared = true) =>
+const layerShellEnvironment = (prepared = true, harnessEnvironment?: Record<string, string>) =>
   Layer.succeed(DesktopShellEnvironment.DesktopShellEnvironment, {
     installIntoProcess: Effect.succeed(prepared),
     awaitDiscovery: Effect.succeed(prepared),
     updates: Stream.empty,
+    harnessEnvironment: Effect.succeed(harnessEnvironment),
   });
 
-const layerBackendConfiguration = (prepared = true) =>
-  DesktopBackendConfiguration.layer.pipe(Layer.provide(layerShellEnvironment(prepared)));
+const layerBackendConfiguration = (prepared = true, harnessEnvironment?: Record<string, string>) =>
+  DesktopBackendConfiguration.layer.pipe(
+    Layer.provide(layerShellEnvironment(prepared, harnessEnvironment)),
+  );
 
 const layerServerExposure = Layer.succeed(DesktopServerExposure.DesktopServerExposure, {
   getState: Effect.die("unexpected getState"),
@@ -104,6 +107,7 @@ const withHarness = <A, E, R>(
     | DesktopBackendConfiguration.DesktopBackendConfiguration
   >,
   prepared = true,
+  harnessEnvironment?: Record<string, string>,
 ) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
@@ -113,7 +117,7 @@ const withHarness = <A, E, R>(
 
     return yield* effect.pipe(
       Effect.provide(
-        layerBackendConfiguration(prepared).pipe(
+        layerBackendConfiguration(prepared, harnessEnvironment).pipe(
           Layer.provideMerge(layerServerExposure),
           Layer.provideMerge(DesktopAppSettings.layerTest()),
           Layer.provideMerge(DesktopWslEnvironment.layerTest()),
@@ -265,6 +269,26 @@ describe("DesktopBackendConfiguration", () => {
           first.bootstrap.desktopBootstrapToken,
         );
       }),
+    ),
+  );
+
+  it.effect("delivers the captured harness environment through the bootstrap envelope", () =>
+    withHarness(
+      Effect.gen(function* () {
+        const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+        const config = yield* configuration.resolvePrimary;
+
+        assert.deepEqual(config.bootstrap.harnessEnvironment, {
+          SLACK_USER_TOKEN: "secret-marker",
+          OTEL_EXPORTER_OTLP_ENDPOINT: "https://otel.example",
+        });
+        assert.notProperty(config.env, "SLACK_USER_TOKEN");
+      }),
+      true,
+      {
+        SLACK_USER_TOKEN: "secret-marker",
+        OTEL_EXPORTER_OTLP_ENDPOINT: "https://otel.example",
+      },
     ),
   );
 

@@ -634,11 +634,34 @@ export const layer: Layer.Layer<
         }
       }
       const { worktreePath, branch } = projection.thread;
-      if (worktreePath !== null && branch !== null) {
+      const settleWorktreeFailure = Effect.fn("ProviderTurnStartService.settleWorktreeFailure")(
+        function* (message: string) {
+          yield* settleRunBeforeStart({
+            signal: "provider-worktree-resume-failure",
+            status: "failed",
+            now: yield* DateTime.now,
+            providerInstanceId: run.providerInstanceId,
+            itemProviderThreadId: providerThread.id,
+            item: {
+              type: "error",
+              title: "Provider worktree could not be resumed",
+              failure: makeProviderFailure({ class: "provider_error", message }),
+            },
+          });
+        },
+      );
+      if (worktreePath !== null) {
         const exists = yield* fileSystem
           .exists(worktreePath)
           .pipe(Effect.orElseSucceed(() => true));
         if (!exists && (yield* isManagedWorktreePath(worktreePath))) {
+          // exowatt: never recreate a worktree without a recorded branch.
+          if (branch === null) {
+            yield* settleWorktreeFailure(
+              "The thread worktree is missing and has no recorded branch; resume stopped without changing the workspace.",
+            );
+            return;
+          }
           const project = yield* projects.getById(projection.thread.projectId).pipe(
             Effect.map(Option.getOrUndefined),
             Effect.orElseSucceed(() => undefined),
@@ -670,6 +693,114 @@ export const layer: Layer.Layer<
                 error: recreateResult.failure,
                 message: recreateResult.failure.message,
               });
+              return;
+            }
+          }
+        } else if (exists) {
+          const inspectWorktree = Effect.fn("ProviderTurnStartService.inspectWorktree")(
+            function* () {
+              yield* gitWorkflow.invalidateLocalStatus(worktreePath);
+              return yield* gitWorkflow.localStatus({ cwd: worktreePath });
+            },
+          );
+          const statusResult = yield* Effect.result(inspectWorktree());
+          if (statusResult._tag === "Failure") {
+            yield* settleWorktreeFailure(
+              "Could not verify the thread worktree's Git state; resume stopped without changing it.",
+            );
+            return;
+          }
+          const status = statusResult.success;
+          if (!status.isRepo) {
+            // Scratch threads intentionally use a non-Git workspace and do
+            // not have a recorded branch. Only a formerly Git-bound thread
+            // becoming non-Git is a recovery failure.
+            if (branch !== null) {
+              yield* settleWorktreeFailure(
+                "The thread worktree is no longer a Git repository; resume stopped without changing it.",
+              );
+              return;
+            }
+          } else if (branch === null) {
+            if (status.refName === null) {
+              yield* settleWorktreeFailure(
+                "The thread worktree is detached and has no recorded branch to restore; resume stopped without changing it.",
+              );
+              return;
+            }
+          } else if (status.refName === branch) {
+            // The checked-out branch agrees with the thread's persisted intent.
+          } else if (status.refName !== null) {
+            yield* settleWorktreeFailure(
+              `The thread expects branch "${branch}", but its worktree is on "${status.refName}". Resume stopped to avoid changing the workspace.`,
+            );
+            return;
+          } else if (status.hasWorkingTreeChanges) {
+            yield* settleWorktreeFailure(
+              `The thread expects branch "${branch}", but its worktree is detached with uncommitted changes. It was left unchanged; resolve those changes and restore the branch before retrying.`,
+            );
+            return;
+          } else {
+            const branchesResult = yield* Effect.result(
+              gitWorkflow.listLocalBranchNames(worktreePath),
+            );
+            if (branchesResult._tag === "Failure" || !branchesResult.success.includes(branch)) {
+              yield* settleWorktreeFailure(
+                `The thread worktree is detached and its recorded branch "${branch}" is not available locally; resume stopped without changing it.`,
+              );
+              return;
+            }
+            const headCommitResult = yield* Effect.result(
+              gitWorkflow.resolveCommit({ cwd: worktreePath, revision: "HEAD" }),
+            );
+            const branchCommitResult = yield* Effect.result(
+              gitWorkflow.resolveCommit({ cwd: worktreePath, revision: `refs/heads/${branch}` }),
+            );
+            if (headCommitResult._tag === "Failure" || branchCommitResult._tag === "Failure") {
+              yield* settleWorktreeFailure(
+                "Could not verify that the detached worktree matches its recorded branch; resume stopped without changing it.",
+              );
+              return;
+            }
+            if (headCommitResult.success.commitSha !== branchCommitResult.success.commitSha) {
+              yield* settleWorktreeFailure(
+                `The thread expects branch "${branch}" at ${branchCommitResult.success.commitSha}, but its detached HEAD is ${headCommitResult.success.commitSha}; resume stopped to avoid losing detached work.`,
+              );
+              return;
+            }
+            const switchResult = yield* Effect.result(
+              gitWorkflow.reattachDetachedHead({
+                cwd: worktreePath,
+                refName: branch,
+                expectedSha: headCommitResult.success.commitSha,
+              }),
+            );
+            if (switchResult._tag === "Failure" || switchResult.success.refName !== branch) {
+              // Only forward a validated object ID from the driver, never the
+              // raw Git error (which may include a private worktree path).
+              const recoverySha =
+                switchResult._tag === "Failure"
+                  ? /\bcommit ([a-f0-9]{40}(?:[a-f0-9]{24})?)\b/u.exec(
+                      switchResult.failure.detail,
+                    )?.[1]
+                  : undefined;
+              yield* settleWorktreeFailure(
+                recoverySha === undefined
+                  ? `The detached thread worktree could not be safely reattached to its recorded branch "${branch}". Inspect its Git state and HEAD reflog before retrying; another process may have changed it.`
+                  : `The detached thread worktree changed during reattachment. Its original commit ${recoverySha} remains in the HEAD reflog; inspect its Git state before retrying.`,
+              );
+              return;
+            }
+            const reattachedStatus = yield* Effect.result(inspectWorktree());
+            if (
+              reattachedStatus._tag === "Failure" ||
+              !reattachedStatus.success.isRepo ||
+              reattachedStatus.success.refName !== branch ||
+              reattachedStatus.success.hasWorkingTreeChanges
+            ) {
+              yield* settleWorktreeFailure(
+                `The thread worktree did not confirm a clean branch "${branch}" after reattachment; resume stopped. Inspect Git state before retrying.`,
+              );
               return;
             }
           }

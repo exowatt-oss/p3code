@@ -194,7 +194,7 @@ it.effect("keeps another connection from committing between a transaction's read
   }).pipe(Effect.provide(NodeServices.layer)),
 );
 
-it.effect("waits for another process's lock while the database opens", () =>
+it.effect.skipIf(Number(process.versions.node.split('.')[0]) < 26)("waits for another process's lock while the database opens", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;

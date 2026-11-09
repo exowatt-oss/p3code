@@ -1,3 +1,6 @@
+import { DEFAULT_REMOTE_HEALTH_CHECK_TIMEOUT_SECONDS } from "@t3tools/contracts/settings";
+import * as Option from "effect/Option";
+import * as DesktopClientSettings from "../../settings/DesktopClientSettings.ts";
 import {
   bootstrapRemoteBearerSession,
   fetchRemoteSessionState,
@@ -137,14 +140,25 @@ export const ensureSshEnvironment = DesktopIpc.makeIpcMethod({
     options,
   }) {
     const sshEnvironment = yield* DesktopSshEnvironment.DesktopSshEnvironment;
-    return yield* sshEnvironment.ensureEnvironment(target, options).pipe(
-      Effect.catchIf(DesktopSshEnvironment.isDesktopSshPasswordPromptCancellation, (error) =>
-        Effect.succeed({
-          type: DesktopSshPasswordPromptCancelledType,
-          message: error.message,
-        }),
-      ),
-    );
+    const clientSettings = yield* DesktopClientSettings.DesktopClientSettings;
+    const settings = yield* clientSettings.get;
+    const timeoutSeconds = Option.match(settings, {
+      onNone: () => DEFAULT_REMOTE_HEALTH_CHECK_TIMEOUT_SECONDS,
+      onSome: (value) => value.remoteHealthCheckTimeoutSeconds,
+    });
+    return yield* sshEnvironment
+      .ensureEnvironment(target, {
+        ...options,
+        probeTimeoutMs: timeoutSeconds * 1_000,
+      })
+      .pipe(
+        Effect.catchIf(DesktopSshEnvironment.isDesktopSshPasswordPromptCancellation, (error) =>
+          Effect.succeed({
+            type: DesktopSshPasswordPromptCancelledType,
+            message: error.message,
+          }),
+        ),
+      );
   }),
 });
 

@@ -115,6 +115,15 @@
         { "range": ">=0.0.13", "status": "supported" },
         { "range": "<0.0.13", "status": "unsupported" }
       ]
+    },
+    {
+      "driver": "phi",
+      "t3CodeRange": ">=0.0.42",
+      "recommendedRange": ">=0.83.0",
+      "ranges": [
+        { "range": ">=0.83.0", "status": "supported" },
+        { "range": "<0.83.0", "status": "unsupported" }
+      ]
     }
   ],
   "currentModels": {

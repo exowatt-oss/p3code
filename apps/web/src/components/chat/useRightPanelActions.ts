@@ -152,6 +152,17 @@ export function useRightPanelActions(input: RightPanelActionsInput) {
     useRightPanelStore.getState().open(activeThreadRef, "pull-requests");
   };
   const addPullRequestsSurfaceStable = useStableCallback(addPullRequestsSurface);
+  // exowatt: the Hub reads v2 thread state, so it needs a server thread.
+  const hubSurfaceAvailable = activeThreadRef !== null && isServerThread;
+  const addHubSurface = () => {
+    if (!activeThreadRef || !isServerThread) return;
+    useRightPanelStore.getState().open(activeThreadRef, "hub");
+  };
+  const addHubSurfaceStable = useStableCallback(addHubSurface);
+  const toggleHubSurface = () => {
+    if (!activeThreadRef || !isServerThread) return;
+    useRightPanelStore.getState().toggle(activeThreadRef, "hub");
+  };
   const addDeviceSurface = () => {
     if (!activeThreadRef) return;
     if (!deviceState.onboardingCompleted || deviceState.hostStatus === "disabled") {
@@ -329,6 +340,10 @@ export function useRightPanelActions(input: RightPanelActionsInput) {
 
   const shortcuts = {
     "rightPanel.toggle": () => toggleRightPanel(),
+    // exowatt: toggles the thread's Hub surface.
+    "rightPanel.hub": ({ event }) => {
+      if (!event.repeat) toggleHubSurface();
+    },
     "rightPanel.toggleMaximized": ({ event }) => {
       if (!event.repeat) toggleRightPanelMaximized();
     },
@@ -346,6 +361,8 @@ export function useRightPanelActions(input: RightPanelActionsInput) {
     addDeviceSurfaceStable,
     addDiffSurfaceStable,
     addFilesSurfaceStable,
+    addHubSurfaceStable,
+    hubSurfaceAvailable,
     addPullRequestSurfaceStable,
     addPullRequestsSurfaceStable,
     closePreviewPanelStable,

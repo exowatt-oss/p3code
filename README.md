@@ -1,153 +1,57 @@
-# T3 Code
+# P3 Code
 
-T3 Code is an "agent harness control surface". It enables control of the agents on your machine with a best-in-class mobile app ([iOS](https://apps.apple.com/us/app/t3-code-remote-claude-more/id6787819824), [Android](https://play.google.com/store/apps/details?id=com.t3tools.t3code)), [web app](https://app.t3.codes) and [Electron-based desktop app](https://t3.codes).
+A desktop, web and mobile workspace for coding agents, with projects, durable threads, and optional integrations.
 
-Works with your subscriptions on Claude Code, Codex, Cursor, Grok Build, OpenCode, Google Antigravity, and fx. If they're set up on your computer, T3 Code can control them.
+![Status: maintained](https://img.shields.io/badge/status-maintained-brightgreen) ![License: MIT](https://img.shields.io/badge/license-MIT-blue)
 
-## "Wait, what are you selling me?"
+Created at [Exowatt](https://exowatt.com).
 
-Nothing. We built T3 Code because we wanted the best possible development experience with agents. We were inspired by existing solutions like the Codex desktop app, Conductor, Claude Desktop and Cursor Glass, but none met our bar.
+## About this fork
 
-We wanted something performant, remote-ready, and truly open. If we ever go the wrong direction, we want you to have everything you need to fork and build the editor that you want.
+P3 Code is a fork of [T3 Code](https://github.com/pingdotgg/t3code), originally created by T3 Tools Inc. It adds multi-environment workspaces, Phi support and other agent-workflow features. It is not affiliated with or endorsed by T3 Tools Inc. Upstream's own application-store listings and installers distribute T3 Code, **not** this fork.
 
-## Installation
+## Status
 
-> [!WARNING]
-> T3 Code currently supports Codex, Claude, Cursor, Grok Build, OpenCode, Antigravity, and fx. Install and authenticate at least one provider before use:
->
-> - Codex: install [Codex CLI](https://developers.openai.com/codex/cli) and run `codex login`
-> - Claude: install [Claude Code](https://claude.com/product/claude-code) and run `claude auth login`
-> - Cursor: install [Cursor CLI](https://cursor.com/cli) and run `agent login`
-> - Grok Build: install [Grok Build CLI](https://x.ai/cli) and run `grok login`
-> - OpenCode: install [OpenCode](https://opencode.ai) and run `opencode auth login`
-> - Antigravity: enable it in Settings, then use **Install Antigravity** and **Sign in with Google**. No CLI is required.
-> - fx: install [fx](https://fx.sh) and run `fx login` on the machine running the T3 Code server ([setup guide](./docs/user/providers-fx.md))
+Maintained by Exowatt. This source export is intended for self-hosting and development; do not assume upstream T3 releases or mobile-store apps contain these changes.
 
-### Command line
+## Install
 
-```bash
-curl -fsSL https://t3.codes/install.sh | sh
-```
+Install [Node.js 26](https://nodejs.org/), [pnpm 12](https://pnpm.io/) and [Vite+](https://viteplus.dev/guide/) (`vp`). Then clone this repository and run:
 
-On Windows, in PowerShell:
-
-```powershell
-irm https://t3.codes/install.ps1 | iex
-```
-
-Then run `t3` to start the server and open the local web app. `t3 service install` keeps it running in the background, `t3 update` moves to a newer release, and `t3 --help` has the full reference.
-
-To try it once without installing, run `npx t3@latest` instead.
-
-### Desktop app
-
-Install the latest version of the desktop app from [GitHub Releases](https://github.com/pingdotgg/t3code/releases), or from your favorite package registry:
-
-#### Windows (`winget`)
-
-```bash
-winget install T3Tools.T3Code
-```
-
-#### Windows (`scoop`)
-
-```bash
-scoop install extras/t3code
-```
-
-#### macOS (Homebrew)
-
-```bash
-brew install --cask t3-code
-```
-
-#### Debian, Ubuntu (`.deb`)
-
-Download the `.deb` from [GitHub Releases](https://github.com/pingdotgg/t3code/releases), then:
-
-```bash
-sudo apt install ./T3-Code-*.deb
-```
-
-#### Arch Linux (AUR)
-
-Stable:
-
-```bash
-yay -S t3code-bin
-```
-
-Nightly:
-
-```bash
-yay -S t3code-nightly-bin
-```
-
-The AUR packaging is maintained in this repository under [`packaging/aur`](./packaging/aur).
-
-#### Nix (nixpkgs)
-
-```bash
-nix profile add github:NixOS/nixpkgs/nixos-unstable#t3code
-```
-
-The package is maintained in [nixpkgs](https://github.com/NixOS/nixpkgs/tree/nixos-unstable/pkgs/by-name/t3/t3code)
-and includes the desktop app (`t3code-desktop`) and the `t3` command.
-See [Nix installation](./docs/user/install.md#nix-nixpkgs) for NixOS configuration and updates.
-
-## Some notes
-
-We are very very early in this project. Expect bugs.
-
-We are (mostly) not accepting contributions yet. Small fixes may be considered. Big features will not be.
-
-## Documentation
-
-Full docs live in [docs/](./docs). There's no docs site yet.
-
-- [FAQ](./docs/user/faq.md)
-- [Install and first run](./docs/user/install.md)
-- [Permission modes](./docs/user/permission-modes.md)
-- [Keyboard shortcuts](./docs/user/keybindings.md)
-- [Project settings](./docs/user/project-settings.md)
-- [Appearance preferences](./docs/user/appearance.md)
-- [Remote access from a phone or another machine](./docs/user/remote-access.md)
-- [Connect Claude Code, Codex, ChatGPT and other agents over MCP](./docs/user/outside-agents.md)
-- [Keeping app and server in sync](./docs/user/updating.md)
-- [Source control integrations](./docs/user/source-control.md)
-- Multiple accounts: [Codex](./docs/user/providers-codex.md) · [Claude](./docs/user/providers-claude.md)
-- [Run T3 Code as a background service](./docs/user/background-service.md)
-
-Building from source? Start at [docs/internals/overview.md](./docs/internals/overview.md).
-
-## If you REALLY want to contribute still.... read this first
-
-### Install `vp`
-
-T3 Code uses Vite+ so you'll need to install the global `vp` command-line tool.
-
-#### macOS / Linux
-
-```bash
-curl -fsSL https://vite.plus | bash
-```
-
-#### Windows
-
-```bash
-irm https://vite.plus/ps1 | iex
-```
-
-Checkout their getting started guide for more information: https://viteplus.dev/guide/
-
-### Install dependencies
-
-```bash
+```sh
 vp i
 ```
 
-Read [CONTRIBUTING.md](./CONTRIBUTING.md) before reporting a bug or opening a PR.
+Install and authenticate at least one coding-agent provider separately (for example [Codex CLI](https://developers.openai.com/codex/cli) and `codex login`, or [Claude Code](https://claude.com/product/claude-code) and `claude auth login`). No Exowatt account or network service is required.
 
-Have a feature request? Start an [Ideas discussion](https://github.com/pingdotgg/t3code/discussions/categories/ideas).
+## Quickstart
 
-Need support? Join the [Discord](https://discord.gg/jn4EGJjrvv).
+```sh
+vp run dev
+```
+
+Open the local address printed by the dev runner, create a project for a directory and start a thread. The web app connects to the local server. Consult [user guides](docs/user/install.md) for remote access and provider setup. For a production build, use `vp run build`. This fork's public source has desktop self-update disabled and does not distribute signed installers or mobile-store builds; do not use upstream distribution assets as P3 builds.
+
+## Configuration
+
+Provider binaries and models are set from the app's Settings or local environment. Phi is optional: its provider slot is discoverable by default, but no Phi process starts until you install its CLI and select it for a thread; its version feed and installer URL default to unset. Feads is optional: configure your own Feads URL and token in Settings or set `P3_FEADS_URL` and `P3_FEADS_TOKEN` on the server. Without a token no Feads calls run. The connector catalog includes only the local P3 MCP endpoint by default; other MCP endpoints are user-supplied.
+
+## Privacy
+
+This fork is self-hosted and sends no usage data to Exowatt by default. Your selected coding-agent provider receives what its agent sends, and optional integrations connect only when you configure them. No Exowatt privacy policy or terms apply to this source-only build; web/mobile policy links are absent unless a distributor explicitly configures its own policy URL. Hosted or app-store distribution needs its own policy and terms first.
+
+## Prerequisites and notices
+
+`@anthropic-ai/claude-agent-sdk` and `@cursor/sdk` are fetched npm dependencies, not vendored source or binaries. Their separate terms govern their use; do not redistribute those SDKs as part of a binary release without reviewing the vendor terms. The optional Android/web terminal includes upstream-inherited Ghostty MIT binaries and font assets; see [NOTICE](NOTICE) and the [mobile terminal notices](apps/mobile/modules/t3-terminal/THIRD_PARTY_NOTICES.md). The upstream iOS static Ghostty archives exceed this export's 10 MB source-file gate and are **not included**; iOS builders must rebuild the MIT library from its documented pinned source before compiling the native app. Building redistributable binaries requires a separate dependency/license review.
+
+## License
+
+MIT, including Exowatt modifications. Keep the original [LICENSE](LICENSE) and see [NOTICE](NOTICE) for upstream and third-party attributions.
+
+## Contributing
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) and the [org contributing guide](https://github.com/exowatt-oss/.github/blob/main/CONTRIBUTING.md). Sign off commits with `git commit -s` (DCO); no CLA.
+
+## Security
+
+Use [GitHub private vulnerability reporting](https://github.com/exowatt-oss/p3code/security/advisories/new), or contact software@exowatt.com. Do not report security vulnerabilities in public issues.

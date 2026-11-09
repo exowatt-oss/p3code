@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
 import {
   chromium,
   type Browser,
@@ -9,7 +11,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 
 import * as ServerBrowserPage from "./ServerBrowserPage.ts";
 
-describe("server browser element refs", () => {
+describe.skipIf(!NodeFS.existsSync(chromium.executablePath()))("server browser element refs", () => {
   let browser: Browser;
   let context: BrowserContext;
   let page: Page;
@@ -271,7 +273,7 @@ describe("server browser element refs", () => {
   });
 });
 
-describe("server browser snapshot screenshot", () => {
+describe.skipIf(!NodeFS.existsSync(chromium.executablePath()))("server browser snapshot screenshot", () => {
   let browser: Browser;
   let context: BrowserContext;
 

@@ -12,6 +12,7 @@ const baseState: ThreadActionMenuState = {
   isSnoozed: false,
   canSnoozeNow: true,
   isRegeneratingTitle: false,
+  canRestartSession: false,
   isRunning: false,
   supports: {
     settlement: true,
@@ -43,6 +44,7 @@ describe("buildThreadActionMenuItems", () => {
             "unsnooze",
             "rename",
             "regenerate-title",
+            "restart-session",
             "auto-settle",
             "archive",
             "delete",
@@ -53,6 +55,7 @@ describe("buildThreadActionMenuItems", () => {
             "snooze",
             "rename",
             "regenerate-title",
+            "restart-session",
             "auto-settle",
             "archive",
             "delete",
@@ -64,6 +67,27 @@ describe("buildThreadActionMenuItems", () => {
       ).toBe(true);
     },
   );
+
+  it("keeps restart findable without a session and enables it with one", () => {
+    const disabled = buildThreadActionMenuItems(baseState).find(
+      (item) => item.id === "restart-session",
+    );
+    expect(disabled).toMatchObject({
+      disabled: true,
+      label: expect.stringContaining("next message starts fresh"),
+    });
+    const enabled = buildThreadActionMenuItems({ ...baseState, canRestartSession: true }).find(
+      (item) => item.id === "restart-session",
+    );
+    expect(enabled).toMatchObject({ disabled: false, label: "Restart session" });
+    const unknown = buildThreadActionMenuItems({ ...baseState, canRestartSession: null }).find(
+      (item) => item.id === "restart-session",
+    );
+    expect(unknown).toMatchObject({
+      disabled: true,
+      label: "Restart session (session status unavailable)",
+    });
+  });
 
   it("disables archive and turning into a project while the thread is running", () => {
     const items = buildThreadActionMenuItems({

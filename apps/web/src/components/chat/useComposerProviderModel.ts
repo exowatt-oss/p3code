@@ -1,7 +1,9 @@
 import {
   type DraftId,
   deriveEffectiveComposerModelState,
+  readEffectiveComposerModelState,
   useComposerDraftModelState,
+  useComposerDraftStore,
 } from "../../composerDraftStore";
 import {
   type ModelSelection,
@@ -10,6 +12,7 @@ import {
   type ScopedThreadRef,
   type ServerProvider,
 } from "@t3tools/contracts";
+import { createModelSelection } from "@t3tools/shared/model";
 import {
   NO_PROVIDER_MODEL_SELECTION,
   providerInstanceEntriesFor,
@@ -84,6 +87,47 @@ export function useComposerProviderModel(
     modelOptions: modelState.modelOptions?.[selectedInstanceId],
     planModeEnabled: settings.planModeEnabled,
   });
+  // exowatt: read the model state from the draft store at send time so a model picked moments
+  // before sending is the one dispatched (the render-time values can lag one commit behind).
+  const readCurrentModelDispatchState = (prompt: string) => {
+    const latestDraft = useComposerDraftStore.getState().getComposerDraft(threadRef);
+    const latestInstanceId = latestDraft?.activeProvider ?? selectedInstanceId;
+    const latestProviderEntry =
+      providerInstanceEntries.find(
+        (entry) => entry.instanceId === latestInstanceId && entry.enabled && entry.isAvailable,
+      ) ?? selection.selectedProviderEntry;
+    const latestProvider = latestProviderEntry?.driverKind ?? selectedProvider;
+    const latestProviderModels = latestProviderEntry?.models ?? selectedProviderModels;
+    const latestModelState = readEffectiveComposerModelState({
+      threadRef,
+      providers: providerStatuses,
+      selectedProvider: latestProvider,
+      selectedInstanceId: latestInstanceId,
+      requestedInstanceId: selection.requestedInstanceId,
+      threadModelSelection,
+      projectModelSelection,
+      settings,
+    });
+    const latestProviderState = getComposerProviderState({
+      provider: latestProvider,
+      model: latestModelState.selectedModel,
+      models: latestProviderModels,
+      promptInjectionState: getComposerPromptInjectionState(prompt),
+      modelOptions: latestModelState.modelOptions?.[latestInstanceId],
+      planModeEnabled: settings.planModeEnabled,
+    });
+    return {
+      selectedPromptEffort: latestProviderState.promptEffort,
+      selectedModelSelection: createModelSelection(
+        latestInstanceId,
+        latestModelState.selectedModel,
+        latestProviderState.modelOptionsForDispatch,
+      ),
+      selectedProvider: latestProvider,
+      selectedModel: latestModelState.selectedModel,
+      selectedProviderModels: latestProviderModels,
+    };
+  };
   return {
     providerInstanceEntries,
     ...selection,
@@ -93,5 +137,6 @@ export function useComposerProviderModel(
     composerModelOptions: modelState.modelOptions,
     selectedModel: modelState.selectedModel,
     composerProviderState,
+    readCurrentModelDispatchState,
   };
 }

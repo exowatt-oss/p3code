@@ -246,6 +246,16 @@ describe("ChatMarkdown favicon privacy", () => {
   });
 });
 
+// exowatt: generated UI was removed; its JSON fences in older replies must not show.
+it("hides p3-ui fences and keeps the text around them", async () => {
+  setup();
+  const text = 'Before\n\n```p3-ui\n{"root":"a","elements":{}}\n```\n\nAfter';
+  await using screen = await render(<ChatMarkdown cwd="/tmp/project" text={text} />);
+  expect(screen.container.textContent).toContain("After");
+  expect(screen.container.textContent).not.toContain("root");
+  expect(screen.container.querySelector("pre")).toBeNull();
+});
+
 describe("ChatMarkdown streaming", () => {
   it("runs only a complete single-line shell block after a click", async () => {
     setup();

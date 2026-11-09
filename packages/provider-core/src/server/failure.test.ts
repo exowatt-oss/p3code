@@ -59,6 +59,82 @@ it("redacts credentials whose key names end in a credential word", () => {
   );
 });
 
+it("redacts complete quoted paths and colon-separated path lists without mangling URLs", () => {
+  const failure = makeProviderFailure({
+    message:
+      'file "/Users/Alice Smith/.config/provider/credential.json" PATH=/Users/alice/private:/Users/bob/private https://example.test/safe/path?token=private',
+  });
+  assert.notInclude(failure.message, "Alice Smith");
+  assert.notInclude(failure.message, "/Users/alice/private");
+  assert.notInclude(failure.message, "/Users/bob/private");
+  assert.include(failure.message, "https://example.test/safe/path");
+  assert.notInclude(failure.message, "token=private");
+});
+
+it("redacts file URLs, UNC paths, and quoted paths containing apostrophes", () => {
+  const failure = makeProviderFailure({
+    message: `file "/Users/O'Connor/private/credential.json" "C:\\Users\\O'Connor\\private.txt" "C:/Users/Alice Smith/private/provider.json" file:///Users/O'Connor/private/provider.json \\\\server\\users\\Alice\\provider.json`,
+  });
+  for (const secret of ["O'Connor", "Alice", "provider.json", "\\\\server\\users"]) {
+    assert.notInclude(failure.message, secret);
+  }
+});
+
+it("redacts entire unquoted path tokens with punctuation and Windows path lists", () => {
+  const failure = makeProviderFailure({
+    message:
+      "file /Users/alice/private;credentials.json PATH=C:\\private;D:\\private https://example.test/safe/path",
+  });
+  for (const secret of ["credentials.json", "C:\\private", "D:\\private", "/Users/alice/private"]) {
+    assert.notInclude(failure.message, secret);
+  }
+  assert.include(failure.message, "https://example.test/safe/path");
+});
+
+it("exowatt: keeps slash-command guidance while redacting real paths", () => {
+  const failure = makeProviderFailure({
+    message:
+      "Claude stopped: the prompt exceeds the model's context window. Run /compact or start a new thread (/login, /clear). Config: /Users/alice/.claude/settings.json",
+  });
+  assert.include(failure.message, "Run /compact or start a new thread (/login, /clear).");
+  assert.notInclude(failure.message, "/Users/alice");
+  assert.include(failure.message, "Config: [REDACTED_PATH]");
+});
+
+it("exowatt: keeps sentence punctuation after a redacted path", () => {
+  assert.equal(
+    makeProviderFailure({ message: "Config not found at /a/b/c. Fix the path and retry." }).message,
+    "Config not found at [REDACTED_PATH]. Fix the path and retry.",
+  );
+  const withExtension = makeProviderFailure({
+    message:
+      "Could not read /a/b/file.json. Also tried (C:\\private\\x.json), ~/.config/y.toml; done",
+  }).message;
+  assert.equal(
+    withExtension,
+    "Could not read [REDACTED_PATH]. Also tried ([REDACTED_PATH]), [REDACTED_PATH]; done",
+  );
+  for (const secret of ["file.json", "x.json", "y.toml", "private"]) {
+    assert.notInclude(withExtension, secret);
+  }
+});
+
+it("redacts network and relative path prefixes without redacting HTTP URLs", () => {
+  const failure = makeProviderFailure({
+    message: `open '//server/users/Alice Smith/provider.json' open ../.config/provider/credential.json open ~/.config/provider/token.json open "../private/Alice Smith/credential.json" https://example.test/safe/path`,
+  });
+  for (const secret of [
+    "Alice Smith",
+    "credential.json",
+    "provider.json",
+    "token.json",
+    "//server/users",
+  ]) {
+    assert.notInclude(failure.message, secret);
+  }
+  assert.include(failure.message, "https://example.test/safe/path");
+});
+
 it("does not split a surrogate pair at the truncation boundary", () => {
   const failure = makeProviderFailure({
     message: `${"a".repeat(MAX_PROVIDER_FAILURE_MESSAGE_LENGTH - 2)}🚀tail`,
@@ -201,6 +277,99 @@ it("explains a native thread another client is writing to", () => {
     cause: inUse,
   });
   assert.equal(makeProviderFailure({ cause: Cause.fail(cause) }).message, inUse.message);
+});
+
+it("diagnoses a provider-start stage without exposing arbitrary argv, environment or credentials", () => {
+  const wrap = (cause: unknown) =>
+    new ProviderAdapter.ProviderAdapterTurnStartError({
+      driver: ProviderDriverKind.make("codex"),
+      threadId: ThreadId.make("thread:provider-start-diagnostic"),
+      providerThreadId: ProviderThreadId.make("provider-thread:provider-start-diagnostic"),
+      runId: RunId.make("run:provider-start-diagnostic"),
+      cause,
+    });
+  const nested = new Error(
+    "spawn ENOENT: --provider-key=unlabelled-private-value /Users/alice/.config/provider/credential.json API_URL=https://user:pass@example.test/start?token=url-secret MY_ENV=plain-private-value",
+  );
+  const failure = makeProviderFailure({ cause: Cause.fail(wrap(nested)), class: "provider_error" });
+
+  assert.equal(
+    failure.message,
+    "Provider turn startup failed (spawn): executable or file not found (ENOENT).",
+  );
+  for (const secret of ["private-value", "/Users/alice", "url-secret", "user:pass"]) {
+    assert.notInclude(failure.message, secret);
+  }
+  assert.equal(
+    makeProviderFailure({ cause: wrap(new Error("some arbitrary error with plain-private-value")) })
+      .message,
+    "The provider could not start this turn. Retry the turn; if it keeps failing, check the provider setup and server logs.",
+  );
+  assert.equal(
+    makeProviderFailure({
+      cause: wrap(
+        Object.assign(new Error("connect ECONNREFUSED /tmp/ENOENT/provider.sock"), {
+          code: "ECONNREFUSED",
+        }),
+      ),
+    }).message,
+    "Provider turn startup failed (connection): connection refused (ECONNREFUSED).",
+  );
+  for (const text of ["Unsupported argument --ENOENT", "spawn failed with argv --model ENOENT"]) {
+    assert.equal(
+      makeProviderFailure({ cause: wrap(new Error(text)) }).message,
+      "The provider could not start this turn. Retry the turn; if it keeps failing, check the provider setup and server logs.",
+    );
+  }
+  assert.equal(
+    makeProviderFailure({ cause: wrap(new Error("connect ECONNREFUSED --model ENOENT")) }).message,
+    "Provider turn startup failed (connection): connection refused (ECONNREFUSED).",
+  );
+  assert.equal(
+    makeProviderFailure({ cause: wrap(new Error("spawn ENOENT: --label ECONNREFUSED")) }).message,
+    "Provider turn startup failed (spawn): executable or file not found (ENOENT).",
+  );
+  assert.equal(
+    makeProviderFailure({
+      cause: wrap(Object.assign(new Error("spawn ENOENT EIO"), { code: "EIO" })),
+    }).message,
+    "The provider could not start this turn. Retry the turn; if it keeps failing, check the provider setup and server logs.",
+  );
+  for (const code of ["ENOENT", "EACCES"] as const) {
+    const failure = makeProviderFailure({
+      cause: wrap(Object.assign(new Error(`read ${code} /missing/attachment.png`), { code })),
+    });
+    assert.notInclude(failure.message, "(spawn)");
+    assert.include(failure.message, code);
+  }
+  assert.equal(
+    makeProviderFailure({ cause: wrap("This provider does not support context compaction.") })
+      .message,
+    "This provider does not support context compaction.",
+  );
+});
+
+it("exowatt: a typed attachment reason outranks the startup code diagnosis", () => {
+  const failure = makeProviderFailure({
+    cause: new ProviderAdapter.ProviderAdapterTurnStartError({
+      driver: ProviderDriverKind.make("codex"),
+      threadId: ThreadId.make("thread:attachment-unreadable"),
+      providerThreadId: ProviderThreadId.make("provider-thread:attachment-unreadable"),
+      runId: RunId.make("run:attachment-unreadable"),
+      cause: new ProviderAdapter.ProviderAdapterProtocolError({
+        driver: ProviderDriverKind.make("codex"),
+        detail: "Failed to read attachment 'private-attachment-id'",
+        reason: "attachment_unreadable",
+        cause: Object.assign(new Error("read ENOENT /Users/alice/attachment.png"), {
+          code: "ENOENT",
+        }),
+      }),
+    }),
+  });
+  assert.equal(
+    failure.message,
+    "The provider could not start this turn: an attachment could not be read. Retry the turn; if it keeps failing, check the provider setup and server logs.",
+  );
 });
 
 it("does not expose defect text nested inside a known error category", () => {

@@ -19,7 +19,14 @@ import { useNavigate } from "@tanstack/react-router";
 import { toastManager } from "../ui/toast";
 import { resolveAppModelSelectionForInstance } from "../../modelSelection";
 import { resolveNewDraftStartFromOrigin } from "../../lib/chatThreadActions";
-import { type DraftThreadEnvMode, useComposerDraftStore } from "../../composerDraftStore";
+import {
+  beginOptimisticComposerModelSelection,
+  type DraftThreadEnvMode,
+  useComposerDraftStore,
+} from "../../composerDraftStore";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { threadEnvironment } from "../../state/threads";
+import { useOrchestrationCommand } from "../../state/use-orchestration-command";
 import {
   getStartedThreadModelChangeBlockReason,
   deriveLockedProvider,
@@ -89,6 +96,9 @@ export function useComposerSelection(input: ComposerSelectionInput) {
     (store) => store.setInteractionMode,
   );
   const setDraftThreadContext = useComposerDraftStore((store) => store.setDraftThreadContext);
+  const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
+    reportFailure: false,
+  });
 
   const handleRuntimeModeChange = (mode: RuntimeMode) => {
     if (mode === runtimeMode) return;
@@ -201,6 +211,36 @@ export function useComposerSelection(input: ComposerSelectionInput) {
         type: "warning",
         title: modelChangeBlockReason.title,
         description: modelChangeBlockReason.description,
+      });
+      if (options?.focusComposer !== false) scheduleComposerFocus();
+      return;
+    }
+    // exowatt: a model change on a live Phi thread applies to the running session
+    // immediately (session-only `set_model`); a failed update rolls the picker back.
+    if (
+      resolvedDriverKind === "phi" &&
+      activeRuntime?.providerInstanceId === instanceId &&
+      activeThread.modelSelection.instanceId === instanceId
+    ) {
+      const optimistic = beginOptimisticComposerModelSelection(
+        scopeThreadRef(activeThread.environmentId, activeThread.id),
+        nextModelSelection,
+      );
+      void updateThreadMetadata({
+        environmentId: activeThread.environmentId,
+        input: { threadId: activeThread.id, modelSelection: nextModelSelection },
+      }).then((result) => {
+        if (result._tag !== "Failure") {
+          optimistic.commit();
+          return;
+        }
+        optimistic.rollback();
+        const error = squashAtomCommandFailure(result);
+        toastManager.add({
+          type: "error",
+          title: "Could not change model",
+          description: error instanceof Error ? error.message : "The model selection failed.",
+        });
       });
       if (options?.focusComposer !== false) scheduleComposerFocus();
       return;

@@ -248,6 +248,7 @@ import type { UnifiedSettings } from "@t3tools/contracts/settings";
 import { isVideoAttachment, type SessionPhase, type Thread, type ThreadShell } from "../../types";
 import { type ComposerPromptHistoryPosition } from "./composerPromptHistory";
 import type { PendingUserInputDraftAnswer } from "@t3tools/client-runtime/state/pending-user-input";
+import { canInsertWithPendingUserInputs } from "../../pendingUserInput";
 import type {
   LatestProposedPlanState,
   PendingApproval,
@@ -259,6 +260,7 @@ import {
   type ComposerDispatchMode,
 } from "@t3tools/client-runtime/state/composer-dispatch";
 import { deriveLatestContextWindowSnapshot } from "@t3tools/client-runtime/state/context-window";
+import { withProviderTurnCost } from "~/lib/contextWindow";
 import {
   resolveProviderSkillsForCwd,
   resolveProviderSlashCommandsForCwd,
@@ -438,6 +440,8 @@ export interface ChatComposerProps {
   contextWindowEntries: Parameters<typeof deriveLatestContextWindowSnapshot>[0];
   contextWindowLiveUsage: Parameters<typeof deriveLatestContextWindowSnapshot>[1];
   contextWindowProviderThread: Parameters<typeof deriveLatestContextWindowSnapshot>[2];
+  /** exowatt: provider-reported session cost (Pi/Phi `costUsd`) for the meter hover. */
+  contextWindowProviderTurns: Parameters<typeof withProviderTurnCost>[1];
   compactThreadUnavailable: boolean;
   compactDisabled: boolean;
   compactDisabledReason: string | null;
@@ -565,6 +569,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     contextWindowEntries,
     contextWindowLiveUsage,
     contextWindowProviderThread,
+    contextWindowProviderTurns,
     compactThreadUnavailable,
     compactDisabled,
     compactDisabledReason,
@@ -609,10 +614,13 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     editingQueuedAttachments,
     onRemoveEditingQueuedAttachment,
   } = props;
-  const activeContextWindow = deriveLatestContextWindowSnapshot(
-    contextWindowEntries,
-    contextWindowLiveUsage,
-    contextWindowProviderThread,
+  const activeContextWindow = withProviderTurnCost(
+    deriveLatestContextWindowSnapshot(
+      contextWindowEntries,
+      contextWindowLiveUsage,
+      contextWindowProviderThread,
+    ),
+    contextWindowProviderTurns,
   );
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const composerDraftTargetKey = composerTargetKey(composerDraftTarget);
@@ -892,6 +900,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     composerModelOptions,
     selectedModel,
     composerProviderState,
+    readCurrentModelDispatchState,
   } = useComposerProviderModel({
     providerStatuses,
     settings,
@@ -2507,6 +2516,8 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       )
     : bannerItems;
 
+  // exowatt: a passive Phi hand-back (awaiting-human workspace state) never blocks cite/paste.
+  const hasBlockingUserInput = !canInsertWithPendingUserInputs(pendingUserInputs);
   const insertComposerText = (
     text: string,
     position: "cursor" | "end",
@@ -2519,7 +2530,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     if (
       text.length === 0 ||
       activePendingIsResponding ||
-      (pendingUserInputs.length > 0 && !activePendingProgress?.activeQuestion) ||
+      (hasBlockingUserInput && !activePendingProgress?.activeQuestion) ||
       projectSelectionRequired ||
       (options?.citationCommentAnchor && !composerEditorRef.current)
     ) {
@@ -3094,39 +3105,39 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
           composerEditorRef.current?.focusAt(nextCollapsedCursor);
         });
       },
-      getSendContext: () => ({
-        answeringPendingUserInput: activePendingProgress !== null,
-        shownPendingApprovalIds: pendingApprovals
-          .map((approval) => approval.requestId)
-          .filter((requestId) => !heldRequestIds.has(requestId)),
-        prompt: promptRef.current,
-        images: composerImagesRef.current,
-        files: composerFilesRef.current,
-        terminalContexts: composerTerminalContextsRef.current,
-        previewAnnotations: composerPreviewAnnotations,
-        reviewComments: composerReviewComments,
-        threadContexts: composerThreadContexts,
-        environmentContexts: composerEnvironmentContexts,
-        selectedPromptEffort,
-        selectedModelSelection,
-        multipleModelSelections:
-          routeKind === "draft" && multipleModelSelections !== null
-            ? multipleModelSelections.map((selection) =>
-                selection.instanceId === selectedModelSelection.instanceId &&
-                selection.model === selectedModelSelection.model
-                  ? selectedModelSelection
-                  : selection,
-              )
-            : null,
-        providerAvailable:
-          multipleModelSelections !== null ||
-          (!noProviderAvailable && providerSendBlockReason === null),
-        selectedProvider,
-        selectedModel,
-        selectedProviderModels,
-        interactionMode,
-        interactionModeEnabled: planModeUiEnabled,
-      }),
+      getSendContext: () => {
+        // exowatt: model state comes from the draft store at send time.
+        const dispatchState = readCurrentModelDispatchState(promptRef.current);
+        return {
+          answeringPendingUserInput: activePendingProgress !== null,
+          shownPendingApprovalIds: pendingApprovals
+            .map((approval) => approval.requestId)
+            .filter((requestId) => !heldRequestIds.has(requestId)),
+          prompt: promptRef.current,
+          images: composerImagesRef.current,
+          files: composerFilesRef.current,
+          terminalContexts: composerTerminalContextsRef.current,
+          previewAnnotations: composerPreviewAnnotations,
+          reviewComments: composerReviewComments,
+          threadContexts: composerThreadContexts,
+          environmentContexts: composerEnvironmentContexts,
+          ...dispatchState,
+          multipleModelSelections:
+            routeKind === "draft" && multipleModelSelections !== null
+              ? multipleModelSelections.map((selection) =>
+                  selection.instanceId === dispatchState.selectedModelSelection.instanceId &&
+                  selection.model === dispatchState.selectedModelSelection.model
+                    ? dispatchState.selectedModelSelection
+                    : selection,
+                )
+              : null,
+          providerAvailable:
+            multipleModelSelections !== null ||
+            (!noProviderAvailable && providerSendBlockReason === null),
+          interactionMode,
+          interactionModeEnabled: planModeUiEnabled,
+        };
+      },
       setMultipleModelSelections,
       validateProviderInput: (providerInput: string) => {
         const validationMessage = getComposerSubmissionValidationMessage({

@@ -289,6 +289,18 @@ export const makeManagedCodexProvider = Effect.fn("makeManagedCodexProvider")(fu
         "generateTranscriptionPostProcessing",
         nativeGeneration.generateTranscriptionPostProcessing(value),
       ),
+    // exowatt: thread icons.
+    generateThreadIcon: (value) =>
+      protect(
+        "generateThreadIcon",
+        nativeGeneration.generateThreadIcon?.(value) ??
+          Effect.fail(
+            new TextGenerationError({
+              operation: "generateThreadIcon",
+              detail: "Codex text generation cannot pick thread icons.",
+            }),
+          ),
+      ),
   };
   return {
     instanceId,

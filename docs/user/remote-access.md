@@ -466,3 +466,18 @@ history, and saved connections are kept, and you keep working through pairing, T
 
 Switch **Local environment** back on in the same place to restart with your previous local
 settings.
+
+## Slow SSH connections
+
+In the desktop app, open **Settings → Environments → Remote health-check timeout**.
+Choose **5 seconds (default)**, **10**, or **30 seconds**. This controls how long each
+health check waits for a response through an SSH connection. The five-second minimum
+allows for the SSH channel setup and HTTP response on a high-latency link. Older
+saved one- or two-second preferences also use this minimum for forwarded checks.
+
+If a reachable environment still fails during connection setup on a very slow network,
+try **10 seconds**. The preference is saved on this device and applies to the next
+connection or automatic reconnect attempt, including checks of existing tunnels.
+An attempt already in progress keeps its previous timeout. No app restart is needed.
+Use the reset button or select **5 seconds (default)** to restore the default.
+This setting does not change direct HTTP or T3 Connect connections.

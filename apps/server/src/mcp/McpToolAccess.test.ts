@@ -466,3 +466,32 @@ it.effect("refuses a linked environment to a tool that acts as its calling threa
     expect(Exit.isFailure(built) && Cause.hasDies(built.cause)).toBe(true);
   }),
 );
+
+// exowatt: the P3 toolkits answer only to a "command-center" caller.
+const CommandCenterProbeToolkit = Toolkit.make(Tool.make("uses_command_center", probe));
+const layerCommandCenterProbe = McpToolAccess.toLayer(CommandCenterProbeToolkit, {
+  uses_command_center: McpToolAccess.usesCommandCenter(
+    () => new OrchestratorMcpFailure({ code: "capability_denied", message: "no command-center" }),
+    () => ran,
+  ),
+});
+
+it.effect.each([
+  ["a `t3 agent token` session", { ...fullAccessClient, client: undefined }, true],
+  ["a provider session the user granted the P3 tools", fullAccess, true],
+  ["an OAuth client", fullAccessClient, false],
+  ["a provider session without the P3 tools", fullAccess, false],
+] as const)("usesCommandCenter answers %s only with the capability", ([, caller, granted]) =>
+  call("uses_command_center", {
+    ...caller,
+    capabilities: new Set(granted ? (["command-center"] as const) : (["orchestration"] as const)),
+  }).pipe(
+    Effect.map((outcome) => expect(outcome).toBe(granted ? "ran" : "capability_denied")),
+    Effect.provide(
+      McpHttpServer.toolkitRegistration(CommandCenterProbeToolkit, layerCommandCenterProbe).pipe(
+        Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+        Layer.provideMerge(Layer.mock(ThreadManagement.ThreadManagementService)({})),
+      ),
+    ),
+  ),
+);

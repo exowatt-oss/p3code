@@ -80,6 +80,8 @@ export class DesktopShellEnvironment extends Context.Service<
     readonly installIntoProcess: Effect.Effect<boolean>;
     readonly awaitDiscovery: Effect.Effect<boolean>;
     readonly updates: Stream.Stream<DesktopShellEnvironmentSnapshot>;
+    // exowatt: the full login-shell capture for harness children; waits for discovery.
+    readonly harnessEnvironment: Effect.Effect<EnvironmentPatch | undefined>;
   }
 >()("@t3tools/desktop/shell/DesktopShellEnvironment") {}
 
@@ -202,6 +204,9 @@ const knownWindowsCliDirs = (env: NodeJS.ProcessEnv): ReadonlyArray<string> => [
 
 const startMarker = (name: string) => `__T3CODE_ENV_${name}_START__`;
 const endMarker = (name: string) => `__T3CODE_ENV_${name}_END__`;
+const FULL_ENV_START_MARKER = "__T3CODE_FULL_ENV_START__";
+const FULL_ENV_END_MARKER = "__T3CODE_FULL_ENV_END__";
+const ENVIRONMENT_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u;
 
 const executableName = (command: string): string => command.split(/[\\/]/u).at(-1) ?? command;
 
@@ -214,6 +219,21 @@ const logShellEnvironmentCommandError = (
       error,
     }),
   );
+
+// exowatt: nushell has no `env -0`, so it gets only the allowlisted names.
+const isNushell = (shell: string): boolean => executableName(shell).toLowerCase().startsWith("nu");
+
+// exowatt: after upstream's allowlist capture, POSIX shells also dump the whole
+// login environment (`env -0`) for harness children (Phi/MCP credentials).
+const captureLoginShellEnvironmentCommand = (shell: string, names: ReadonlyArray<string>) =>
+  isNushell(shell)
+    ? buildEnvironmentCaptureCommand(shell, names)
+    : [
+        ...(names.length > 0 ? [buildEnvironmentCaptureCommand(shell, names)] : []),
+        `printf '\\0%s\\0' '${FULL_ENV_START_MARKER}'`,
+        "env -0",
+        `printf '\\0%s\\0' '${FULL_ENV_END_MARKER}'`,
+      ].join("; ");
 
 const captureWindowsEnvironmentCommand = (names: ReadonlyArray<string>) =>
   [
@@ -249,6 +269,31 @@ const extractEnvironment = (output: string, names: ReadonlyArray<string>): Envir
   }
 
   return environment;
+};
+
+export const parseNullSeparatedEnvironment = (output: string): EnvironmentPatch => {
+  const environment: EnvironmentPatch = {};
+
+  for (const entry of output.split("\0")) {
+    const separator = entry.indexOf("=");
+    if (separator <= 0) continue;
+
+    const name = entry.slice(0, separator);
+    if (!ENVIRONMENT_NAME_PATTERN.test(name)) continue;
+    environment[name] = entry.slice(separator + 1);
+  }
+
+  return environment;
+};
+
+const extractFullEnvironment = (output: string): EnvironmentPatch => {
+  const startBoundary = `\0${FULL_ENV_START_MARKER}\0`;
+  const endBoundary = `\0${FULL_ENV_END_MARKER}\0`;
+  const start = output.indexOf(startBoundary);
+  if (start === -1) return {};
+  const valueStart = start + startBoundary.length;
+  const end = output.indexOf(endBoundary, valueStart);
+  return end === -1 ? {} : parseNullSeparatedEnvironment(output.slice(valueStart, end));
 };
 
 const runCommandOutput = Effect.fn("desktop.shellEnvironment.runCommandOutput")(function* (input: {
@@ -324,20 +369,30 @@ const runCommandOutput = Effect.fn("desktop.shellEnvironment.runCommandOutput")(
   return "";
 });
 
+interface LoginShellEnvironmentCapture {
+  readonly allowlisted: EnvironmentPatch;
+  readonly full: EnvironmentPatch;
+}
+
 const readLoginShellEnvironment = (
   shell: string,
   names: ReadonlyArray<string>,
   env: NodeJS.ProcessEnv,
-): Effect.Effect<EnvironmentPatch, never, ChildProcessSpawner.ChildProcessSpawner> =>
-  names.length === 0
-    ? Effect.succeed({})
+): Effect.Effect<LoginShellEnvironmentCapture, never, ChildProcessSpawner.ChildProcessSpawner> =>
+  names.length === 0 && isNushell(shell)
+    ? Effect.succeed({ allowlisted: {}, full: {} })
     : runCommandOutput({
         probe: "login-shell",
         command: shell,
-        args: ["-ilc", buildEnvironmentCaptureCommand(shell, names)],
+        args: ["-ilc", captureLoginShellEnvironmentCommand(shell, names)],
         env,
         timeout: LOGIN_SHELL_TIMEOUT,
-      }).pipe(Effect.map((output) => extractEnvironment(output, names)));
+      }).pipe(
+        Effect.map((output) => ({
+          allowlisted: extractEnvironment(output, names),
+          full: extractFullEnvironment(output),
+        })),
+      );
 
 const readLaunchctlPath = (env: NodeJS.ProcessEnv) =>
   runCommandOutput({
@@ -417,18 +472,18 @@ const installPosixEnvironment = Effect.fn("desktop.shellEnvironment.installPosix
   function* (
     config: ShellEnvironmentConfig,
   ): Effect.fn.Return<
-    boolean,
+    ShellEnvironmentInstallation,
     never,
     ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem
   > {
     const fileSystem = yield* FileSystem.FileSystem;
     const shellEnvironment: EnvironmentPatch = {};
+    const fullEnvironment: EnvironmentPatch = {};
 
     for (const shell of listLoginShellCandidates(config.platform, config.env.SHELL)) {
-      Object.assign(
-        shellEnvironment,
-        yield* readLoginShellEnvironment(shell, LOGIN_SHELL_ENV_NAMES, config.env),
-      );
+      const capture = yield* readLoginShellEnvironment(shell, LOGIN_SHELL_ENV_NAMES, config.env);
+      Object.assign(shellEnvironment, capture.allowlisted);
+      Object.assign(fullEnvironment, capture.full);
       if (shellEnvironment.PATH) break;
     }
 
@@ -518,24 +573,56 @@ const installPosixEnvironment = Effect.fn("desktop.shellEnvironment.installPosix
       }
     }
 
-    return Option.isSome(trimNonEmpty(shellEnvironment.PATH));
+    const harnessEnvironment = reconcileHarnessEnvironment(fullEnvironment, config.env);
+    return {
+      installed: Option.isSome(trimNonEmpty(shellEnvironment.PATH)),
+      harnessEnvironment:
+        Object.keys(harnessEnvironment).length > 0 ? harnessEnvironment : undefined,
+    };
   },
 );
+
+/**
+ * Harness children get the raw login-shell capture with the allowlisted names replaced by
+ * their reconciled desktop values (merged PATH, kept SSH_AUTH_SOCK, UTF-8 locale fallback),
+ * so a phi found only through the launcher PATH still resolves.
+ */
+export const reconcileHarnessEnvironment = (
+  fullEnvironment: EnvironmentPatch,
+  reconciled: NodeJS.ProcessEnv,
+): EnvironmentPatch => {
+  if (Object.keys(fullEnvironment).length === 0) return fullEnvironment;
+  const result: EnvironmentPatch = { ...fullEnvironment };
+  for (const name of [...LOGIN_SHELL_ENV_NAMES, "LC_CTYPE"]) {
+    const value = reconciled[name];
+    if (value !== undefined && value !== "") result[name] = value;
+  }
+  return result;
+};
+
+interface ShellEnvironmentInstallation {
+  /** Whether the login/profile environment was discovered; false leaves server hydration enabled. */
+  readonly installed: boolean;
+  /** exowatt: the full login-shell capture handed to harness children (MCP credentials). */
+  readonly harnessEnvironment: EnvironmentPatch | undefined;
+}
 
 const installShellEnvironment = (
   config: ShellEnvironmentConfig,
 ): Effect.Effect<
-  boolean,
+  ShellEnvironmentInstallation,
   never,
   ChildProcessSpawner.ChildProcessSpawner | FileSystem.FileSystem
 > => {
   if (config.platform === "win32") {
-    return installWindowsEnvironment(config);
+    return installWindowsEnvironment(config).pipe(
+      Effect.map((installed) => ({ installed, harnessEnvironment: undefined })),
+    );
   }
   if (config.platform === "darwin" || config.platform === "linux") {
     return installPosixEnvironment(config);
   }
-  return Effect.succeed(false);
+  return Effect.succeed({ installed: false, harnessEnvironment: undefined });
 };
 
 const ShellEnvironmentCache = Schema.fromJsonString(
@@ -579,6 +666,8 @@ export const make = Effect.gen(function* () {
   const changes = yield* PubSub.unbounded<DesktopShellEnvironmentSnapshot>();
   const latest = yield* Ref.make<Option.Option<DesktopShellEnvironmentSnapshot>>(Option.none());
   const discovered = yield* Deferred.make<boolean>();
+  // exowatt: never persisted to the cache file (it holds credentials).
+  const capturedHarnessEnvironment = yield* Ref.make<EnvironmentPatch | undefined>(undefined);
   const publish = Effect.fn("desktop.shellEnvironment.publish")(function* (
     patch: ShellEnvironmentPatch,
     discovered = false,
@@ -597,7 +686,12 @@ export const make = Effect.gen(function* () {
   const refresh = Effect.gen(function* () {
     // Refresh from the inherited baseline so removed cached paths and values do not survive.
     const fresh = { ...inherited };
-    const prepared = yield* installShellEnvironment({ env: fresh, platform: environment.platform });
+    const installation = yield* installShellEnvironment({
+      env: fresh,
+      platform: environment.platform,
+    });
+    const prepared = installation.installed;
+    yield* Ref.set(capturedHarnessEnvironment, installation.harnessEnvironment);
     const patch = Object.fromEntries(
       Object.keys(ShellEnvironmentPatch.fields).map((name) => [name, fresh[name] ?? null]),
     );
@@ -671,6 +765,12 @@ export const make = Effect.gen(function* () {
     installIntoProcess,
     awaitDiscovery: installIntoProcess.pipe(Effect.andThen(Deferred.await(discovered))),
     updates,
+    // The backend bootstrap waits for this; the window does not.
+    harnessEnvironment: installIntoProcess.pipe(
+      Effect.andThen(Deferred.await(discovered)),
+      Effect.andThen(Ref.get(capturedHarnessEnvironment)),
+      Effect.map((captured) => (captured === undefined ? undefined : { ...captured })),
+    ),
   });
 });
 

@@ -47,6 +47,14 @@ export const SETTINGS_DEVICE_ONLY_PATHS: ReadonlySet<string> = new Set([
   "/settings/appearance",
   "/settings/chat",
   "/settings/diffs",
+  // exowatt: Customize (which replaces Appearance) and its sub-pages are device or
+  // primary-environment pages.
+  "/settings/customize",
+  "/settings/customize/pets",
+  "/settings/customize/mcp",
+  "/settings/customize/skills",
+  "/settings/customize/plugins",
+  "/settings/customize/extensions",
   "/settings/snap-shot",
   "/settings/connections",
   // Access picks its environment on the page itself.

@@ -30,6 +30,8 @@ import {
   readWorkspaceConfig,
   createBuildConfig,
   DESKTOP_FILE_EXCLUSIONS,
+  DESKTOP_EXTRA_RESOURCES,
+  resolveDesktopProductName,
   InvalidMacPasskeyRpDomainError,
   InvalidMacPasskeyPublishableKeyError,
   UnsupportedDesktopBuildArchitectureError,
@@ -236,6 +238,12 @@ const makeMacPayloadFixture = Effect.fn("test.makeMacPayloadFixture")(function* 
 });
 
 it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
+  // exowatt: P3's packaged product name; nightly keeps the suffix.
+  it("names desktop packages P3 Code", () => {
+    assert.equal(resolveDesktopProductName("0.1.0"), "P3 Code");
+    assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "P3 Code (Nightly)");
+  });
+
   it.effect("rejects overlapping builds from another process until restoration finishes", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -565,6 +573,72 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       }
     }),
   );
+
+  // exowatt: P3 packaging identity (app id, DMG-only target, usage strings, P3 server resource).
+  it.effect("packages macOS builds with the P3 identity", () =>
+    Effect.gen(function* () {
+      const mac = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "1.2.3",
+        false,
+        false,
+        undefined,
+        undefined,
+      );
+      const macDmgOnly = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "1.2.3",
+        false,
+        false,
+        undefined,
+        undefined,
+        false,
+        undefined,
+        true,
+      );
+
+      assert.equal(mac.appId, "com.exowatt.p3code");
+      assert.equal(mac.artifactName, "P3-Code-${version}-${arch}.${ext}");
+      assert.equal((mac.dmg as Record<string, unknown>).title, "P3 Code 1.2.3 Installer");
+      const macConfig = mac.mac as Record<string, unknown>;
+      assert.deepStrictEqual(macConfig.target, ["dmg", "zip"]);
+      assert.deepStrictEqual((macDmgOnly.mac as Record<string, unknown>).target, ["dmg"]);
+      const extendInfo = macConfig.extendInfo as Record<string, unknown>;
+      assert.equal(
+        extendInfo.NSScreenCaptureUsageDescription,
+        "P3 Code captures the active window when you use the window capture shortcut.",
+      );
+      assert.equal(
+        extendInfo.NSCameraUsageDescription,
+        "P3 Code lets commands run by terminals and coding agents use the camera.",
+      );
+      assert.equal(
+        extendInfo.NSMicrophoneUsageDescription,
+        "P3 Code lets commands run by terminals and coding agents use the microphone.",
+      );
+      assert.equal(
+        extendInfo.NSLocalNetworkUsageDescription,
+        "P3 Code connects to devices on your local network for remote environments and commands run by terminals and coding agents.",
+      );
+      assert.deepStrictEqual(macConfig.protocols, [
+        { name: "P3 Code", schemes: ["t3code", "t3code-dev"] },
+        { name: "Web site URL", schemes: ["http", "https"], role: "Viewer" },
+      ]);
+      assert.deepStrictEqual(mac.extraResources, DESKTOP_EXTRA_RESOURCES);
+    }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
+  );
+
+  // exowatt: the P3 remote server tarball ships only as an extra resource, never inside app.asar.
+  it("ships the P3 server tarball as a resource outside app.asar", () => {
+    assert.deepStrictEqual(DESKTOP_EXTRA_RESOURCES.at(-1), {
+      from: "apps/desktop/prod-resources/p3-server",
+      to: "p3-server",
+    });
+    assert.include(DESKTOP_FILE_EXCLUSIONS, "!apps/desktop/prod-resources/p3-server");
+    assert.include(DESKTOP_FILE_EXCLUSIONS, "!apps/desktop/prod-resources/p3-server/**/*");
+  });
 
   it("stages only the externals of both bundles in merged packages", () => {
     assert.deepStrictEqual(
@@ -1418,7 +1492,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     });
 
     assert.deepStrictEqual(configuration, {
-      appId: "com.t3tools.t3code",
+      appId: "com.exowatt.p3code",
       teamId: "ABC1234567",
       rpDomains: ["example.clerk.accounts.dev"],
       provisioningProfilePath: "/tmp/t3code.provisionprofile",
@@ -1441,7 +1515,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       "clerk.example.com",
       "example.clerk.accounts.dev",
     ]);
-    assert.include(entitlements, "<string>ABC1234567.com.t3tools.t3code</string>");
+    assert.include(entitlements, "<string>ABC1234567.com.exowatt.p3code</string>");
     assert.include(entitlements, "<string>webcredentials:clerk.example.com</string>");
     assert.include(entitlements, "<string>webcredentials:example.clerk.accounts.dev</string>");
     assert.include(entitlements, "<key>com.apple.security.cs.allow-jit</key>");
@@ -1620,6 +1694,26 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         ),
       ),
     ),
+  );
+
+  // exowatt: signed macOS builds keep the P3 app id.
+  it.effect("adds passkey entitlements and both renderer protocols to signed macOS builds", () =>
+    Effect.gen(function* () {
+      const config = yield* createBuildConfig("mac", "dmg", "1.2.3", true, false, undefined, {
+        entitlementsPath: "/tmp/entitlements.mac.plist",
+        provisioningProfilePath: "/tmp/t3code.provisionprofile",
+      });
+
+      const mac = config.mac as Record<string, unknown>;
+      assert.equal(config.appId, "com.exowatt.p3code");
+      assert.equal(mac.entitlements, "/tmp/entitlements.mac.plist");
+      assert.equal(mac.provisioningProfile, "/tmp/t3code.provisionprofile");
+      assert.match(String(mac.sign), /[\\/]scripts[\\/]sign-macos\.ts$/);
+      assert.deepStrictEqual(mac.protocols, [
+        { name: "P3 Code", schemes: ["t3code", "t3code-dev"] },
+        { name: "Web site URL", schemes: ["http", "https"], role: "Viewer" },
+      ]);
+    }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 
   it("parses Windows bsdtar member listings with CRLF line endings", () => {

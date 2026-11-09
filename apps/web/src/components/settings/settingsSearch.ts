@@ -1,4 +1,5 @@
 import { HOSTED_APP_CHANNEL } from "~/branding";
+import { PRIVACY_POLICY_URL } from "../../legalLinks";
 import { isElectron, isSecretsFeatureEnabled } from "~/env";
 import { isMacPlatform, isWindowsPlatform, normalizeSearchText } from "~/lib/utils";
 import { STATIC_KEYBINDING_COMMANDS, type KeybindingCommand } from "@t3tools/contracts";
@@ -20,7 +21,7 @@ export type SettingsPath =
   | "/settings/general"
   | "/settings/diagnostics"
   | "/settings/voice"
-  | "/settings/appearance"
+  | "/settings/customize"
   | "/settings/chat"
   | "/settings/diffs"
   | "/settings/keybindings"
@@ -88,7 +89,7 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/diagnostics": "Diagnostics",
   "/settings/projects": "Projects",
   "/settings/general": "General",
-  "/settings/appearance": "Appearance",
+  "/settings/customize": "Customize",
   "/settings/chat": "Chat",
   "/settings/diffs": "Diffs & pull requests",
   "/settings/keybindings": "Keybindings",
@@ -119,7 +120,8 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
     heading: null,
     paths: [
       "/settings/general",
-      "/settings/appearance",
+      // exowatt: Customize (P3 Appearance plus its sub-pages) replaces Appearance.
+      "/settings/customize",
       "/settings/chat",
       "/settings/diffs",
       "/settings/keybindings",
@@ -299,14 +301,14 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "color-scheme",
     title: "Color scheme",
-    to: "/settings/appearance",
+    to: "/settings/customize",
     searchTerms: ["appearance light dark system mode"],
     targetId: "appearance",
   },
   {
     id: "theme",
     title: "Themes",
-    to: "/settings/appearance",
+    to: "/settings/customize",
     searchTerms: ["appearance colors palette custom import"],
     targetId: "appearance",
   },
@@ -314,14 +316,14 @@ export const SETTINGS_SEARCH_ITEMS = [
     // Prefixed because the slider control already owns the `appearance-contrast` id.
     id: "setting-appearance-contrast",
     title: "Contrast",
-    to: "/settings/appearance",
+    to: "/settings/customize",
     searchTerms: ["colors borders interface"],
   },
   {
     // Prefixed because the slider control already owns the `glass-opacity` id.
     id: "setting-glass-opacity",
     title: "Glass opacity",
-    to: "/settings/appearance",
+    to: "/settings/customize",
     searchTerms: ["transparent transparency solid menus dialogs composer"],
   },
   {
@@ -333,13 +335,13 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "chat-width",
     title: "Chat width",
-    to: "/settings/appearance",
+    to: "/settings/customize",
     searchTerms: ["wide full width column layout messages composer monitor"],
   },
   {
     id: "thread-details-items",
     title: "Thread details",
-    to: "/settings/appearance",
+    to: "/settings/customize",
     searchTerms: [
       "customize show hide panel card environment editor scripts branch pull request git changes servers automations lineage usage limits 5 hour weekly quota tokens context window",
     ],
@@ -347,80 +349,141 @@ export const SETTINGS_SEARCH_ITEMS = [
   {
     id: "effort-display",
     title: "Effort display",
-    to: "/settings/appearance",
+    to: "/settings/customize",
     searchTerms: ["reasoning effort thinking bars graph word label level composer"],
   },
   {
     id: "math-rendering",
     title: "Render math",
-    to: "/settings/appearance",
+    to: "/settings/customize",
     searchTerms: ["latex tex katex equations formulas markdown"],
   },
   {
     id: "panel-animations",
     title: "Panel animations",
-    to: "/settings/appearance",
+    to: "/settings/customize",
   },
   {
     id: "environment-identification",
     title: "Environment identification",
-    to: "/settings/appearance",
+    to: "/settings/customize",
     searchTerms: ["dev nightly latest channel artwork pill label hide none"],
     targetId: "appearance-interface",
   },
   {
     id: "interface-font",
     title: "Interface font",
-    to: "/settings/appearance",
+    to: "/settings/customize",
     searchTerms: ["typography family size system sans"],
   },
   {
     id: "prompt-font",
     title: "Prompt font",
-    to: "/settings/appearance",
+    to: "/settings/customize",
     searchTerms: ["typography family size composer input"],
   },
   {
     id: "code-font",
     title: "Code font",
-    to: "/settings/appearance",
+    to: "/settings/customize",
     searchTerms: ["typography family size monospace code blocks diffs file previews"],
   },
   {
     id: "terminal-font",
     title: "Terminal font",
-    to: "/settings/appearance",
+    to: "/settings/customize",
     searchTerms: ["typography family size monospace output"],
   },
   {
     id: "separate-fonts",
     title: "Separate fonts",
-    to: "/settings/appearance",
+    to: "/settings/customize",
     searchTerms: ["typography advanced prompt code terminal font family size individually"],
   },
   {
     id: "font-smoothing",
     title: "Font smoothing",
-    to: "/settings/appearance",
+    to: "/settings/customize",
     searchTerms: ["typography text grayscale anti aliasing macos thin"],
     macOnly: true,
   },
   {
     id: "word-wrap",
     title: "Word wrap",
-    to: "/settings/appearance",
+    to: "/settings/customize",
     searchTerms: ["long lines code blocks diffs file previews"],
   },
   {
     id: "composer-context",
     title: "Composer context",
-    to: "/settings/appearance",
+    to: "/settings/customize",
+  },
+  // exowatt: P3's own Customize rows, blended into the same page.
+  {
+    id: "exowatt-accent",
+    title: "Accent",
+    to: "/settings/customize",
+    searchTerms: ["color default sunrise orange signal brand blueprint"],
+  },
+  {
+    id: "exowatt-status-light-blink",
+    title: "Status-light blink",
+    to: "/settings/customize",
+    searchTerms: ["animation pulse running indicator intensity"],
+  },
+  {
+    id: "exowatt-sidebar-density",
+    title: "Sidebar density",
+    to: "/settings/customize",
+    searchTerms: ["compact comfortable rows"],
+  },
+  {
+    id: "exowatt-sidebar-group-by-project",
+    title: "Group threads by project",
+    to: "/settings/customize",
+    searchTerms: ["sidebar sections flat stream"],
+  },
+  {
+    id: "exowatt-sidebar-project-sort",
+    title: "Project sort order",
+    to: "/settings/customize",
+    searchTerms: ["sidebar sections manual drag"],
+  },
+  {
+    id: "exowatt-sidebar-nest-dispatched",
+    title: "Nest dispatched threads",
+    to: "/settings/customize",
+    searchTerms: ["sidebar subagents children origin parent"],
+  },
+  {
+    id: "exowatt-sidebar-sort",
+    title: "Default thread sort",
+    to: "/settings/customize",
+    searchTerms: ["sidebar order recent activity created name status"],
+  },
+  {
+    id: "exowatt-sidebar-sort-direction",
+    title: "Thread sort direction",
+    to: "/settings/customize",
+    searchTerms: ["sidebar order reverse oldest first newest ascending descending"],
+  },
+  {
+    id: "exowatt-session-state-callouts",
+    title: "Session-state callouts",
+    to: "/settings/customize",
+    searchTerms: ["phi chat header timeline card feads"],
+  },
+  {
+    id: "exowatt-thread-signals",
+    title: "Thread signals for agents",
+    to: "/settings/labs",
+    searchTerms: ["beta experimental mcp t3_signal_emit orchestrator signals"],
   },
   {
     id: "project-grouping",
-    title: "Project grouping",
+    title: "Merge repositories across environments",
     to: "/settings/general",
-    searchTerms: ["combine matching repositories environments sidebar"],
+    searchTerms: ["combine matching repositories environments logical project sidebar grouping"],
   },
   {
     id: "project-order",
@@ -657,7 +720,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: "Response streaming",
     to: "/settings/threads",
     scope: "project-defaults",
-    searchTerms: ["output token paragraph buffered wait turn legacy"],
+    searchTerms: ["output token paragraph buffered wait turn live"],
   },
   {
     id: "hide-whitespace-changes",
@@ -835,11 +898,33 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["phone tablet iPhone iPad iOS Android App Store Google Play QR"],
   },
   {
-    id: "privacy-policy",
-    title: "Privacy policy",
+    id: "exowatt-build",
+    title: "P3 Code build",
     to: "/settings/about",
-    searchTerms: ["telemetry analytics usage data tracking legal opt out"],
+    searchTerms: ["about version build release copy t3 code p3"],
   },
+  {
+    id: "exowatt-whats-new",
+    title: "What's new",
+    to: "/settings/about",
+    searchTerms: ["changelog release notes updates new features"],
+  },
+  {
+    id: "exowatt-logs",
+    title: "Logs",
+    to: "/settings/about",
+    searchTerms: ["log folder diagnostics debug trace bug report"],
+  },
+  ...(PRIVACY_POLICY_URL
+    ? [
+        {
+          id: "privacy-policy" as const,
+          title: "Privacy policy",
+          to: "/settings/about" as const,
+          searchTerms: ["telemetry analytics usage data tracking legal opt out"],
+        },
+      ]
+    : []),
   {
     id: "telemetry-export",
     title: "OpenTelemetry export",
@@ -1038,7 +1123,7 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "pull-request-links-open-in-app",
-    title: "Open pull requests in T3 Code",
+    title: "Open pull requests in P3 Code",
     to: "/settings/diffs",
     searchTerms: [
       `pr commit links ${SOURCE_CONTROL_HOST_LABELS} browser external click default pull request view panel`,
@@ -1240,6 +1325,57 @@ export const SETTINGS_SEARCH_ITEMS = [
       "connections server backend local remote access administrative permissions scope pairing links qr code authorized clients sessions revoke endpoint",
     ],
   },
+  // exowatt: P3's agent tools and the feads card sit on Access (Settings › Integrations is gone).
+  {
+    id: "agent-p3-tools",
+    title: "Agent P3 tools",
+    to: "/settings/access",
+    searchTerms: [
+      "mcp p3 threads projects settings harness forward listen create agents sessions threads",
+    ],
+  },
+  {
+    id: "cross-environment-agent-tools",
+    title: "Agents reach my other environments",
+    to: "/settings/access",
+    scope: "environment-defaults",
+    desktopOnly: true,
+    searchTerms: ["mcp agents remote connected threads link other environment ssh bearer outbound"],
+  },
+  {
+    id: "peer-inbound",
+    title: "Agents from my other environments may act here",
+    to: "/settings/access",
+    scope: "environment-defaults",
+    desktopOnly: true,
+    searchTerms: [
+      "mcp agents remote connected threads link other environment ssh inbound reverse permission ceiling full access approval",
+    ],
+  },
+  {
+    id: "feads-token",
+    title: "feads token",
+    to: "/settings/access",
+    searchTerms: ["feads agent token bearer fdsa board beads agentwatch tracker connect secret"],
+  },
+  {
+    id: "feads-server",
+    title: "feads server",
+    to: "/settings/access",
+    searchTerms: ["feads url dashboard address host self-hosted"],
+  },
+  {
+    id: "feads-default-board",
+    title: "feads default board",
+    to: "/settings/access",
+    searchTerms: ["feads board id forca route file beads"],
+  },
+  {
+    id: "feads-connection",
+    title: "feads connection",
+    to: "/settings/access",
+    searchTerms: ["feads test token actor who am i verify identity"],
+  },
   {
     id: "linked-environments",
     peerLinksOnly: true,
@@ -1247,6 +1383,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/connections",
     targetId: "linked-environments",
     searchTerms: ["link peer another machine vps agents work there handoff pairing code"],
+  },
+  {
+    id: "remote-health-check-timeout",
+    title: "Remote health-check timeout",
+    to: "/settings/connections",
+    searchTerms: ["ssh slow network latency connection reconnect seconds"],
+    desktopOnly: true,
   },
   {
     id: "remote-environments",
@@ -1302,7 +1445,7 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/projects": "project",
   "/settings/general": null,
   "/settings/voice": null,
-  "/settings/appearance": null,
+  "/settings/customize": null,
   "/settings/chat": null,
   "/settings/diffs": null,
   "/settings/snap-shot": null,
@@ -1324,6 +1467,8 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
 };
 
 const RENAMED_SETTINGS_PATHS: Readonly<Record<string, SettingsPath>> = {
+  // exowatt: Appearance lives in Settings › Customize.
+  "/settings/appearance": "/settings/customize",
   "/settings/integrations": "/settings/browser",
   "/settings/storage": "/settings/maintenance",
   "/settings/beta": "/settings/labs",
@@ -1338,6 +1483,9 @@ const SPLIT_SETTINGS_PATHS: ReadonlySet<string> = new Set([
 // Section anchors that moved but are not search results themselves.
 const MOVED_SECTION_ANCHORS: Readonly<Record<string, SettingsPath>> = {
   "authorized-clients": "/settings/access",
+  // exowatt: P3's Integrations sections moved to Access.
+  "agent-tools": "/settings/access",
+  feads: "/settings/access",
   "legacy-features": "/settings/labs",
   "text-generation": "/settings/threads",
   about: "/settings/about",
@@ -1448,6 +1596,9 @@ export function filterAvailableSettingsSearchItems(
   );
 }
 
+/** exowatt: upstream rows P3 keeps hidden. P3 ships no guest links; Labs skips the row too. */
+export const EXOWATT_HIDDEN_SETTING_IDS: ReadonlySet<string> = new Set(["guest-links"]);
+
 /** The settings that exist on this platform and app channel. */
 export function settingsForThisPlatform(
   items: ReadonlyArray<SettingsSearchItem>,
@@ -1455,8 +1606,11 @@ export function settingsForThisPlatform(
   const platform = typeof navigator === "undefined" ? "" : navigator.platform;
   return items.filter(
     (item) =>
+      !EXOWATT_HIDDEN_SETTING_IDS.has(item.id) &&
       (isElectron || item.desktopOnly !== true) &&
-      (!item.releaseChannelOnly || isElectron || HOSTED_APP_CHANNEL !== null) &&
+      // exowatt: the desktop has no update track (Homebrew ships P3 updates); only a hosted
+      // channel build shows the row.
+      (!item.releaseChannelOnly || HOSTED_APP_CHANNEL !== null) &&
       (!item.secretsFeatureOnly || isSecretsFeatureEnabled) &&
       (!item.macOnly || isMacPlatform(platform)) &&
       (!item.windowsOnly || isWindowsPlatform(platform)),

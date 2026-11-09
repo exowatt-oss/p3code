@@ -6,6 +6,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as PlatformError from "effect/PlatformError";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 import * as DesktopBackendPool from "../backend/DesktopBackendPool.ts";
 import * as DesktopConfig from "../app/DesktopConfig.ts";
@@ -16,19 +17,24 @@ import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopState from "../app/DesktopState.ts";
 import * as DesktopUpdatePolicy from "./DesktopUpdatePolicy.ts";
 import * as DesktopUpdates from "./DesktopUpdates.ts";
+import * as DesktopUpdateTransport from "./DesktopUpdateTransport.ts";
 
 export const flushCallbacks = Effect.yieldNow;
+
+const isTransportCheckError = Schema.is(DesktopUpdateTransport.DesktopUpdateTransportCheckError);
 
 export interface UpdatesHarnessOptions {
   readonly checkForUpdates?: Effect.Effect<
     void,
-    ElectronUpdater.ElectronUpdaterCheckForUpdatesError
+    | DesktopUpdateTransport.DesktopUpdateTransportCheckError
+    | ElectronUpdater.ElectronUpdaterCheckForUpdatesError
   >;
   readonly beforeSetUpdateChannel?: Effect.Effect<void>;
   readonly setUpdateChannelError?: DesktopAppSettings.DesktopSettingsWriteError;
   readonly setDisableDifferentialDownload?: Effect.Effect<void>;
   readonly downloadUpdate?: Effect.Effect<void>;
   readonly quitAndInstall?: Effect.Effect<void, ElectronUpdater.ElectronUpdaterQuitAndInstallError>;
+  readonly previousInstallFailure?: string | null;
   readonly stopBackend?: Effect.Effect<void>;
   readonly startBackend?: Effect.Effect<void>;
   readonly backendDesiredRunning?: boolean;
@@ -49,8 +55,6 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
   let checkCount = 0;
   let quitAndInstallCount = 0;
   let downloadCount = 0;
-  let allowDowngrade = false;
-  const checkAllowedDowngrade: boolean[] = [];
   let fullChangelog = false;
   const feedUrls: ElectronUpdater.ElectronUpdaterFeedUrl[] = [];
   const listeners = new Map<string, Set<(...args: readonly unknown[]) => void>>();
@@ -74,37 +78,41 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
     }
   };
 
-  const layerUpdater = Layer.succeed(ElectronUpdater.ElectronUpdater, {
-    setFeedURL: (options) =>
+  const layerUpdater = Layer.succeed(DesktopUpdateTransport.DesktopUpdateTransport, {
+    disabledReason: Effect.succeed(null),
+    previousInstallFailure: Effect.succeed(options.previousInstallFailure ?? null),
+    setChannel: (channel) =>
       Effect.sync(() => {
-        feedUrls.push(options);
+        fullChangelog = channel === "nightly";
       }),
-    setAutoDownload: () => Effect.void,
-    setAutoInstallOnAppQuit: () => Effect.void,
-    setChannel: () => Effect.void,
-    setAllowPrerelease: () => Effect.void,
-    allowDowngrade: Effect.sync(() => allowDowngrade),
-    setAllowDowngrade: (value) =>
+    checkForUpdates: () =>
       Effect.sync(() => {
-        allowDowngrade = value;
-      }),
-    setFullChangelog: (value) =>
-      Effect.sync(() => {
-        fullChangelog = value;
-      }),
-    setDisableDifferentialDownload: () => options.setDisableDifferentialDownload ?? Effect.void,
-    checkForUpdates: Effect.sync(() => {
-      checkCount += 1;
-      checkAllowedDowngrade.push(allowDowngrade);
-    }).pipe(Effect.andThen(options.checkForUpdates ?? Effect.void)),
+        checkCount += 1;
+      }).pipe(
+        Effect.andThen(options.checkForUpdates ?? Effect.void),
+        Effect.mapError((cause) =>
+          isTransportCheckError(cause)
+            ? cause
+            : new DesktopUpdateTransport.DesktopUpdateTransportCheckError({ cause }),
+        ),
+      ),
     downloadUpdate: Effect.sync(() => {
       downloadCount += 1;
-    }).pipe(Effect.andThen(options.downloadUpdate ?? Effect.void)),
-    quitAndInstall: () =>
-      Effect.sync(() => {
-        quitAndInstallCount += 1;
-        installSteps.push("quitAndInstall");
-      }).pipe(Effect.andThen(options.quitAndInstall ?? Effect.void)),
+    }).pipe(
+      Effect.andThen(options.downloadUpdate ?? Effect.void),
+      Effect.mapError(
+        (cause) => new DesktopUpdateTransport.DesktopUpdateTransportDownloadError({ cause }),
+      ),
+    ),
+    quitAndInstall: Effect.sync(() => {
+      quitAndInstallCount += 1;
+      installSteps.push("quitAndInstall");
+    }).pipe(
+      Effect.andThen(options.quitAndInstall ?? Effect.void),
+      Effect.mapError(
+        (cause) => new DesktopUpdateTransport.DesktopUpdateTransportInstallError({ cause }),
+      ),
+    ),
     on: (eventName, listener) =>
       Effect.acquireRelease(
         Effect.sync(() => {
@@ -115,7 +123,7 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
             removeListener(eventName, listener as unknown as (...args: readonly unknown[]) => void);
           }),
       ).pipe(Effect.asVoid),
-  } satisfies ElectronUpdater.ElectronUpdater["Service"]);
+  } satisfies DesktopUpdateTransport.DesktopUpdateTransport["Service"]);
 
   const layerWindow = Layer.succeed(ElectronWindow.ElectronWindow, {
     create: () => Effect.die("unexpected BrowserWindow creation"),
@@ -303,9 +311,6 @@ export function makeHarness(options: UpdatesHarnessOptions = {}) {
     downloadCount: () => downloadCount,
     feedUrls: (): ElectronUpdater.ElectronUpdaterFeedUrl[] => feedUrls,
     fullChangelog: () => fullChangelog,
-    /** Whether each feed check could offer an older release, and the flag now. */
-    checkAllowedDowngrade,
-    allowDowngrade: () => allowDowngrade,
     listenerCount: () =>
       Array.from(listeners.values()).reduce(
         (total, eventListeners) => total + eventListeners.size,

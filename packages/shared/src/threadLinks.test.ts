@@ -169,11 +169,39 @@ describe("thread links", () => {
     );
   });
 
+  // exowatt: a thread here (no environment) gets P3's `p3://thread/<id>` form (decision D6).
+  it("writes a P3 link, one encoded id segment, for a thread with no environment", () => {
+    const link = formatThreadLink(v1("thread:delegated-task:mcp%3A1"));
+    expect(link).toBe("<p3://thread/thread%3Adelegated-task%3Amcp%253A1>");
+    expect(parseThreadLinkHref(link.slice(1, -1))).toEqual(v1("thread:delegated-task:mcp%3A1"));
+    expect(formatThreadLink(v1("thread/1)"), "Fix")).toBe("[Fix](p3://thread/thread%2F1%29)");
+  });
+
   it("formats a label that would otherwise break the Markdown link", () => {
     expect(formatThreadLink(ref("e", "t1"), "Fix [ci] \\ build")).toBe(
       "[Fix ci build](t3-thread://v2/e/t1)",
     );
     expect(formatThreadLink(ref("e", "t1"), " ] ")).toBe("<t3-thread://v2/e/t1>");
+    expect(formatThreadLink(v1("t1"), " Fix\n the  build ")).toBe(
+      "[Fix the build](p3://thread/t1)",
+    );
+    expect(formatThreadLink(v1("t1"), " ] ")).toBe("<p3://thread/t1>");
+  });
+
+  it("parses P3 thread links like v1 links, percent-decoding the id segment", () => {
+    expect(parseThreadLinkHref("p3://thread/thread-1")).toEqual(v1("thread-1"));
+    expect(parseThreadLinkHref("p3://thread/thread%3Aproject%3A1%29")).toEqual(
+      v1("thread:project:1)"),
+    );
+    expect(parseThreadLinkHref("p3://thread/")).toBeNull();
+    expect(parseThreadLinkHref("p3://thread/a/b")).toBeNull();
+    expect(parseThreadLinkHref("p3://thread/%E0%A4%A")).toBeNull();
+  });
+
+  it("finds P3 links in Markdown and autolinks, outside code", () => {
+    expect(
+      threadLinkRefs("[a](p3://thread/t%3A1) <p3://thread/t2> `[c](p3://thread/t3)`", local),
+    ).toEqual([ref("local", "t:1"), ref("local", "t2")]);
   });
 });
 

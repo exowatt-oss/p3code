@@ -7,6 +7,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import * as DesktopLifecycle from "../../app/DesktopLifecycle.ts";
 import * as DesktopUpdates from "../../updates/DesktopUpdates.ts";
 import * as IpcChannels from "../channels.ts";
 import * as DesktopIpc from "../DesktopIpc.ts";
@@ -64,5 +65,15 @@ export const checkForUpdate = DesktopIpc.makeIpcMethod({
   handler: Effect.fn("desktop.ipc.updates.check")(function* () {
     const updates = yield* DesktopUpdates.DesktopUpdates;
     return yield* updates.check("web-ui");
+  }),
+});
+
+export const restartApplication = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.RESTART_APPLICATION_CHANNEL,
+  payload: Schema.Void,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.restartApplication")(function* () {
+    const lifecycle = yield* DesktopLifecycle.DesktopLifecycle;
+    yield* lifecycle.relaunch("renderer chunk load recovery");
   }),
 });

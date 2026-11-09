@@ -29,6 +29,9 @@ export const DesktopBackendBootstrap = Schema.Struct({
   desktopBrowserFd: Schema.optionalKey(PositiveInt),
   desktopBrowserControlFd: Schema.optionalKey(PositiveInt),
   resourceMonitorPath: Schema.optionalKey(TrimmedNonEmptyString),
+  // Delivered through the one-shot bootstrap fd, never the backend process env
+  // or argv. The server keeps this in memory and forwards it only to harnesses.
+  harnessEnvironment: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
 });
 
 export type DesktopBackendBootstrap = typeof DesktopBackendBootstrap.Type;
