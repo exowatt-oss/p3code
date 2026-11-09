@@ -2,7 +2,8 @@ name: Public core CI
 
 on:
   push:
-    branches: [oss/export]
+    branches: [main]
+  workflow_dispatch:
   pull_request:
 
 permissions:
